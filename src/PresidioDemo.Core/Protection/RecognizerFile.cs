@@ -71,12 +71,50 @@ public sealed record AllowList(bool Regex, IReadOnlyList<string> Items, IReadOnl
 /// <param name="Anonymizers">The actions by entity, including <c>DEFAULT</c> when configured.</param>
 /// <param name="Enabled">The names of Presidio predefined recognizers the file lists as enabled; they run anyway, but their names
 /// are checked so a typo stops startup.</param>
+/// <param name="EntityMapping">JSON property names whose whole value is an entity, by name (ignoring case), as Presidio's
+/// structured analysis maps a key to an entity; null for none.</param>
+/// <param name="KeysToSkip">JSON property names whose values are published unchanged without analysis, as Presidio's
+/// <c>analyze_dict</c> skips keys; null for none.</param>
 public sealed record RecognizerFile(FeedType Feed, string Language, double Threshold, IReadOnlyList<string> Disabled,
     IReadOnlyList<CustomRecognizer> Recognizers, AllowList AllowList, IReadOnlyDictionary<string, AnonymizerAction> Anonymizers,
-    IReadOnlyList<string>? Enabled = null)
+    IReadOnlyList<string>? Enabled = null, IReadOnlyDictionary<string, string>? EntityMapping = null, IReadOnlySet<string>? KeysToSkip = null)
 {
 
     #region Methods
+
+    /// <summary>
+    /// Returns the entity mapped to a JSON value's key path: that of the innermost property name with a mapping, so a value
+    /// nested under a mapped name (every string under <c>transitionLinkSegments</c>) is that entity too.
+    /// </summary>
+    /// <param name="names">The property names of the value's key path, outermost first.</param>
+    /// <returns>The entity, or null when no name on the path is mapped.</returns>
+    public string? MappedEntity(IReadOnlyList<string> names)
+    {
+        for (int i = names.Count - 1; EntityMapping is not null && i >= 0; i--)
+        {
+            if (EntityMapping.TryGetValue(names[i], out var entity))
+            {
+                return entity;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Returns whether a JSON value sits under a skipped property name anywhere on its key path, as a skipped key in
+    /// Presidio's <c>analyze_dict</c> skips everything nested under it.
+    /// </summary>
+    /// <param name="names">The property names of the value's key path, outermost first.</param>
+    /// <returns>True when the value is published unchanged without analysis.</returns>
+    public bool Skips(IReadOnlyList<string> names) => KeysToSkip is not null && names.Any(KeysToSkip.Contains);
+
+    /// <summary>
+    /// Returns whether the file names a JSON property in <c>&lt;entity_mapping&gt;</c> or <c>&lt;keys_to_skip&gt;</c>. Only a
+    /// declared name is written in a value-free detection log location; any other name could itself be a value (WR-018).
+    /// </summary>
+    /// <param name="name">The unescaped property name.</param>
+    /// <returns>True when the name is declared.</returns>
+    public bool Declares(string name) => (EntityMapping?.ContainsKey(name) ?? false) || (KeysToSkip?.Contains(name) ?? false);
 
     /// <summary>
     /// Returns the action for a detected entity: its own, else <c>DEFAULT</c>, else Presidio's default <c>replace</c>.
@@ -131,6 +169,11 @@ public static class RecognizerFileReader
     };
 
     /// <summary>
+    /// Compares the JSON property names of <c>&lt;entity_mapping&gt;</c> and <c>&lt;keys_to_skip&gt;</c>, ignoring case.
+    /// </summary>
+    private static readonly StringComparer KeyComparer = StringComparer.OrdinalIgnoreCase;
+
+    /// <summary>
     /// The time limit for one .NET allow-list match.
     /// </summary>
     private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(100);
@@ -140,7 +183,7 @@ public static class RecognizerFileReader
     #region Methods
 
     /// <summary>
-    /// Returns the file name of a feed's recognizer XML, such as <c>pnr.xml</c>.
+    /// Returns the file name of a feed's recognizer XML, such as <c>pnr-linking.xml</c>.
     /// </summary>
     /// <param name="feed">The feed route.</param>
     /// <returns>The file name.</returns>
@@ -210,6 +253,8 @@ public static class RecognizerFileReader
         var recognizers = new List<CustomRecognizer>();
         var anonymizers = new Dictionary<string, AnonymizerAction>(StringComparer.Ordinal);
         AllowList? allowList = null;
+        Dictionary<string, string>? entityMapping = null;
+        HashSet<string>? keysToSkip = null;
         foreach (var element in root.Elements())
         {
             switch (element.Name.LocalName)
@@ -242,13 +287,63 @@ public static class RecognizerFileReader
                     var action = Anonymizer(element, file);
                     Require(anonymizers.TryAdd(action.Entity, action), file, $"entity '{action.Entity}' has two anonymizers");
                     break;
+                case "entity_mapping":
+                    Require(entityMapping is null, file, "declares <entity_mapping> twice");
+                    entityMapping = Keys(element, file, mapped: true).ToDictionary(key => key.Name, key => key.Entity!, KeyComparer);
+                    break;
+                case "keys_to_skip":
+                    Require(keysToSkip is null, file, "declares <keys_to_skip> twice");
+                    keysToSkip = Keys(element, file, mapped: false).Select(key => key.Name).ToHashSet(KeyComparer);
+                    break;
                 case var retired when RetiredNames.Contains(retired):
                     throw Invalid(file, $"element <{retired}> is no longer supported (use the Presidio-style format)");
                 default:
                     throw Invalid(file, $"has an unknown element <{element.Name.LocalName}>");
             }
         }
-        return new RecognizerFile(feed, language, threshold, disabled, recognizers, allowList ?? AllowList.Empty, anonymizers, enabled);
+        string? both = entityMapping?.Keys.FirstOrDefault(name => keysToSkip?.Contains(name) ?? false);
+        Require(both is null, file, $"key '{both}' is both mapped to an entity and skipped");
+        return new RecognizerFile(feed, language, threshold, disabled, recognizers, allowList ?? AllowList.Empty, anonymizers, enabled,
+            entityMapping, keysToSkip);
+    }
+
+    /// <summary>
+    /// Reads the <c>&lt;key&gt;</c> children of <c>&lt;entity_mapping&gt;</c> (a JSON property name and an entity) or of
+    /// <c>&lt;keys_to_skip&gt;</c> (a JSON property name only). Names are unique, ignoring case; <c>*</c> stands for array
+    /// indexes in a key path, so it is not a name.
+    /// </summary>
+    private static IReadOnlyList<(string Name, string? Entity)> Keys(XElement element, string file, bool mapped)
+    {
+        string list = element.Name.LocalName;
+        Attributes(element, file);
+        Children(element, file, "key");
+        var names = new HashSet<string>(KeyComparer);
+        var keys = new List<(string Name, string? Entity)>();
+        foreach (var key in element.Elements("key"))
+        {
+            Require(!key.HasElements && key.Value.Length == 0, file, $"<{list}> <key> takes no content");
+            if (mapped)
+            {
+                Attributes(key, file, "name", "entity");
+            }
+            else
+            {
+                Attributes(key, file, "name");
+            }
+            string name = key.Attribute("name")?.Value ?? "";
+            Require(name.Length > 0 && name != "*" && name.Trim() == name, file, $"every <{list}> <key> needs a JSON property name");
+            Require(names.Add(name), file, $"<{list}> names key '{name}' twice");
+            string? entity = null;
+            if (mapped)
+            {
+                entity = key.Attribute("entity")?.Value ?? "";
+                Require(Regex.IsMatch(entity, "\\A[A-Z][A-Z_]*\\z", RegexOptions.CultureInvariant) && entity != FeedAnonymizer.DefaultEntity, file,
+                    $"entity_mapping key '{name}' needs an upper-case entity");
+            }
+            keys.Add((name, entity));
+        }
+        Require(keys.Count > 0, file, $"<{list}> needs at least one <key>");
+        return keys;
     }
 
     /// <summary>

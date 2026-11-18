@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PNR-Linking recognizers in the Presidio-style format (WR-014): a flat list under <recognizers> that mirrors Presidio's
+  recognizer registry YAML, its analyze allow_list and its anonymizers map, using Presidio's names. The payload is JSON:
+  every JSON string is a candidate and is decided on its own; numbers, booleans and nulls never change.
+  Order per string: a string under an <entity_mapping> key is that entity across its whole width; a string under a
+  <keys_to_skip> key, or that matches an <allow_list> item end to end, is published unchanged; otherwise Presidio
+  analyzes it with the property names of its key path as context words, and every span detected at or above
+  default_score_threshold gets its entity's <anonymizer>, else DEFAULT, else Presidio's replace. A string in which nothing
+  is detected is published unchanged and listed for review. Every result keeps the string's width (WR-015).
+  A key is a JSON property name, matched ignoring case anywhere on the key path. Values below are made up.
+-->
+<recognizers feed="PNR-Linking" language="en" default_score_threshold="0.5">
+
+  <!-- ===== Predefined recognizers (Presidio's own). All of them run unless switched off by class name, for example:
+       <recognizer name="CryptoRecognizer" type="predefined" enabled="false" />  ===== -->
+
+  <!-- ===== Custom pattern recognizers (Presidio type: custom), for strings under no mapped or skipped key. ===== -->
+
+  <!-- Example: in "ChangeReason": "NAME CORRECTION MILLER/JORDAN", MILLER/JORDAN -> *************. -->
+  <recognizer name="passengerName" type="custom" supported_entity="PERSON">
+    <pattern name="surname/given" score="0.9">(?&lt;![A-Z])[A-Z]{2,}(?:[ '-][A-Z]+)*/[A-Z]+(?:[ '-][A-Z]+)*</pattern>
+  </recognizer>
+
+  <!-- ===== Entity mapping (Presidio structured analysis): the whole value under a key is the entity. ===== -->
+  <!-- A number or boolean under a mapped key cannot be protected in its JSON type, so the message is dead-lettered
+       (WR-016). Examples: "FirstName": "JORDAN" -> "******"; "DOB": "1985-03-12" -> "**********"; every string under
+       "transitionLinkSegments" -> "*" across its width; "DOB": 19850312 dead-letters the message. -->
+  <entity_mapping>
+    <key name="FirstName" entity="PERSON" />
+    <key name="LastName" entity="PERSON" />
+    <key name="MiddleName" entity="PERSON" />
+    <key name="BookedAs" entity="PERSON" />
+    <key name="DOB" entity="DATE_OF_BIRTH" />
+    <key name="DateOfBirth" entity="DATE_OF_BIRTH" />
+    <!-- Example: "PaxId": "P-0001" -> "******". -->
+    <key name="PaxId" entity="PASSENGER_ID" />
+    <!-- Example: "PaxLinkId": "L-2026-0001" -> "***********". -->
+    <key name="PaxLinkId" entity="PASSENGER_LINK_ID" />
+    <key name="PaxFlightLegLinkId" entity="PASSENGER_LINK_ID" />
+    <key name="ReferenceLinkId" entity="PASSENGER_LINK_ID" />
+    <!-- Example: "OrderId": "DA-1A2B3C" -> "*********". -->
+    <key name="OrderId" entity="ORDER_ID" />
+    <!-- Example: "UserId": "jmiller01" -> "*********". -->
+    <key name="UserId" entity="USER_ID" />
+    <!-- Example: "UaLoyaltyAcctNbr": "DA12345678" -> "**********". -->
+    <key name="UaLoyaltyAcctNbr" entity="LOYALTY_NUMBER" />
+    <key name="PartnerLoyaltyAcctNbr" entity="LOYALTY_NUMBER" />
+    <key name="transitionLinkSegments" entity="SENSITIVE_ATTRIBUTE" />
+  </entity_mapping>
+
+  <!-- ===== Keys to skip (Presidio analyze_dict keys_to_skip): published unchanged without analysis. ===== -->
+  <!-- The record locators link the bookings, so they stay unchanged. Example: "PNROwner": "K7QX2M". -->
+  <keys_to_skip>
+    <key name="UaRecordLocator" />
+    <key name="PNROwner" />
+    <key name="pnr" />
+    <key name="linkedPnr" />
+    <key name="oldPnr" />
+    <key name="newPnr" />
+    <!-- Operational values. Examples: "LinkType": "INF", "FlightLegOffPoint": "LAX". -->
+    <key name="AAA" />
+    <key name="AgentSine" />
+    <key name="BoardPoint" />
+    <key name="ChangeOfOwnershipTimestamp" />
+    <key name="ChangeType" />
+    <key name="ChannelId" />
+    <key name="CreateDateTime" />
+    <key name="DateAdded" />
+    <key name="FlightLegId" />
+    <key name="FlightLegOffPoint" />
+    <key name="FlightSegId" />
+    <key name="IsIRROP" />
+    <key name="LEID" />
+    <key name="LastUpdateDateTime" />
+    <key name="LinkType" />
+    <key name="LinkVersion" />
+    <key name="LocalDepartureDate" />
+    <key name="OffPoint" />
+    <key name="OperatingAirlineCode" />
+    <key name="OperatingFlightNumber" />
+    <key name="OrderPurgeDate" />
+    <key name="PaxStatus" />
+    <key name="SeqInPNR" />
+    <key name="UaRecordLocatorCreateDate" />
+  </keys_to_skip>
+  <!-- Reason values (ChangeReason, LinkReasonAtCreation, ReasonForLeaving) can carry free text, so they are analyzed. -->
+
+  <!-- ===== Allow list: a decoded string that matches an item end to end is published unchanged. ===== -->
+  <!-- Examples: 2026-11-09, 2026-11-09T14:05:33.120Z, 2026-11-09T12:00:00.000 AM, under any key. -->
+  <allow_list match="regex">
+    <item>^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?Z?)?(?: [A-Z]{2})?$</item>
+  </allow_list>
+
+  <!-- ===== Anonymizers (Presidio anonymizers map): one action per entity. ===== -->
+  <!-- Allowed types: mask, replace, redact, hash, keep; every result is fitted to the width it replaces (WR-015). -->
+  <anonymizer entity="PERSON" type="mask" masking_char="*" />
+  <anonymizer entity="DATE_OF_BIRTH" type="mask" masking_char="*" />
+  <anonymizer entity="PASSENGER_ID" type="mask" masking_char="*" />
+  <anonymizer entity="PASSENGER_LINK_ID" type="mask" masking_char="*" />
+  <anonymizer entity="ORDER_ID" type="mask" masking_char="*" />
+  <anonymizer entity="USER_ID" type="mask" masking_char="*" />
+  <anonymizer entity="LOYALTY_NUMBER" type="mask" masking_char="*" />
+  <anonymizer entity="SENSITIVE_ATTRIBUTE" type="mask" masking_char="*" />
+  <anonymizer entity="EMAIL_ADDRESS" type="mask" masking_char="*" />
+  <anonymizer entity="PHONE_NUMBER" type="mask" masking_char="*" />
+  <anonymizer entity="IP_ADDRESS" type="mask" masking_char="*" />
+  <anonymizer entity="CREDIT_CARD" type="mask" masking_char="*" />
+  <!-- Every other entity, including Presidio's LOCATION, NRP and DATE_TIME.
+       Without this line Presidio's default applies: replace with <ENTITY>. -->
+  <anonymizer entity="DEFAULT" type="mask" masking_char="#" />
+
+</recognizers>

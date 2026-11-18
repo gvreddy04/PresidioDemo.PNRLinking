@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using PresidioDemo.Core.Decoder;
 using PresidioDemo.Core.Models;
 
 namespace PresidioDemo.Core.Protection;
@@ -20,7 +21,8 @@ public enum DetectionDecision
     /// </summary>
     Kept = 1,
     /// <summary>
-    /// The whole string matched an allow-list item and was published unchanged without analysis.
+    /// The whole string matched an allow-list item, or sits under a skipped JSON key, and was published unchanged without
+    /// analysis.
     /// </summary>
     Allowed = 2,
     /// <summary>
@@ -83,13 +85,19 @@ public enum ReviewReason
 /// <param name="Entity">The detected entity types, joined with <c>+</c>, or empty.</param>
 /// <param name="Score">The highest detection score, or zero.</param>
 /// <param name="Decision">What happened to the string.</param>
-/// <param name="Offset">The payload byte offset of the string, or null when the codec reports none.</param>
 /// <param name="Operator">The operators applied, joined with <c>+</c>, or empty.</param>
 /// <param name="Reasons">Why the string is listed for review, or <see cref="ReviewReason.None"/>.</param>
 /// <param name="Threshold">The feed's score threshold, so a review line can compare a weak score with it.</param>
 /// <param name="NoActionEntities">The detected entities without an anonymizer of their own, joined with <c>+</c>, or empty.</param>
+/// <param name="Pointer">The string's JSON Pointer with every property name, which may itself be a value in dynamic-key JSON;
+/// written only with <c>Presidio:DetectionLogValues</c> on (WR-020).</param>
+/// <param name="SafePointer">The JSON Pointer with every property name the feed's recognizer file does not declare replaced by
+/// <c>?</c>; array indexes stay (WR-018).</param>
+/// <param name="Pattern">The string's key path with array indexes as <c>*</c>, used to group strings across messages in the
+/// local harness summary (WR-021).</param>
 public sealed record DetectionEvent(int Slot, int Length, string Shape, string Recognizer, string Entity, double Score, DetectionDecision Decision,
-    int? Offset = null, string Operator = "", ReviewReason Reasons = ReviewReason.None, double Threshold = 0, string NoActionEntities = "");
+    string Operator = "", ReviewReason Reasons = ReviewReason.None, double Threshold = 0, string NoActionEntities = "",
+    string Pointer = "", string SafePointer = "", string Pattern = "");
 
 /// <summary>
 /// The protected values for every parsed field, and one detection event per decoded string.
@@ -106,10 +114,13 @@ public sealed record DetectionOutcome(IReadOnlyDictionary<string, string> Values
 #endregion
 
 /// <summary>
-/// Protects one parsed message with its feed's recognizer file. Presidio only returns spans; every decision is made here.
-/// Each decoded string is decided on its own (WR-014): a whole-string allow-list match is published unchanged; otherwise
-/// each span at or above the threshold gets its entity's action (its own, else <c>DEFAULT</c>, else <c>replace</c>), and a
-/// string in which nothing is detected is published unchanged. Every result keeps the string's width (WR-015).
+/// Protects one parsed JSON message with its feed's recognizer file. Presidio only returns spans; every decision is made
+/// here. Every JSON string is a candidate and is decided on its own (WR-014), in this order: a string under a mapped key is
+/// that entity across its whole width; a string under a skipped key, or that matches an allow-list item end to end, is
+/// published unchanged; otherwise Presidio analyzes it with the property names of its key path as context, each span at or
+/// above the threshold gets its entity's action (its own, else <c>DEFAULT</c>, else <c>replace</c>), and a string in which
+/// nothing is detected is published unchanged. Numbers, booleans and nulls never change, and a number or boolean under a
+/// mapped key dead-letters the message (WR-016). Every result keeps the string's width (WR-015).
 /// </summary>
 /// <param name="files">The validated recognizer files by feed.</param>
 public sealed class DetectingFeedProtector(IReadOnlyDictionary<FeedType, RecognizerFile> files) : IFeedProtector
@@ -121,6 +132,16 @@ public sealed class DetectingFeedProtector(IReadOnlyDictionary<FeedType, Recogni
     /// The name Presidio reports for its spaCy named-entity recognizer.
     /// </summary>
     public const string SpacyRecognizer = "SpacyRecognizer";
+
+    /// <summary>
+    /// The recognizer name logged for a string decided by its key in <c>&lt;entity_mapping&gt;</c>.
+    /// </summary>
+    public const string EntityMappingRecognizer = "entity_mapping";
+
+    /// <summary>
+    /// The recognizer name logged for a string published unchanged by <c>&lt;keys_to_skip&gt;</c>.
+    /// </summary>
+    public const string KeysToSkipRecognizer = "keys_to_skip";
 
     /// <summary>
     /// Serializes calls into the shared embedded Python engines.
@@ -156,16 +177,19 @@ public sealed class DetectingFeedProtector(IReadOnlyDictionary<FeedType, Recogni
     /// Protects every decoded string of one parsed message.
     /// </summary>
     /// <param name="feed">The feed route.</param>
-    /// <param name="parsed">The parse from the generic XDR codec.</param>
+    /// <param name="parsed">The parse from the JSON feed parser.</param>
     /// <param name="cancellationToken">The token that interrupts processing.</param>
     /// <returns>The protected value of every field and one event per decoded string.</returns>
-    /// <exception cref="InvalidDataException">Detection failed, a pattern timed out, or an action failed.</exception>
+    /// <exception cref="InvalidDataException">A mapped key holds a number or boolean, detection failed, a pattern timed out,
+    /// or an action failed.</exception>
     public async ValueTask<DetectionOutcome> ProtectAsync(FeedType feed, ParsedFeed parsed, CancellationToken cancellationToken)
     {
         var file = files[feed];
-        var candidates = parsed.Fields;
+        var candidates = JsonFeedParser.StringFields(parsed);
+        RejectMappedNonStrings(file, parsed);
         var values = parsed.Fields.ToDictionary(field => field.Id, field => field.Value, StringComparer.Ordinal);
         var events = new DetectionEvent[candidates.Count];
+        var names = candidates.Select(field => JsonFeedParser.PropertyNames(field.Name)).ToArray();
         var pending = new List<int>();
         try
         {
@@ -175,6 +199,17 @@ public sealed class DetectingFeedProtector(IReadOnlyDictionary<FeedType, Recogni
                 if (field.Value.Length == 0)
                 {
                     events[slot] = Event(file, slot, field, "none", "", 0, DetectionDecision.NothingDetected);
+                }
+                else if (file.MappedEntity(names[slot]) is { } entity)
+                {
+                    // The key says what the value is, so the whole string is the entity and Presidio is not asked (WR-014).
+                    var (value, applied, reasons) = Apply(file, field.Value, [new Span(0, field.Value.Length, entity, 1, EntityMappingRecognizer)]);
+                    values[field.Id] = value;
+                    events[slot] = Applied(file, slot, field, value, applied, reasons);
+                }
+                else if (file.Skips(names[slot]))
+                {
+                    events[slot] = Event(file, slot, field, KeysToSkipRecognizer, "", 0, DetectionDecision.Allowed);
                 }
                 else if (file.AllowList.MatchesWhole(field.Value))
                 {
@@ -191,7 +226,8 @@ public sealed class DetectingFeedProtector(IReadOnlyDictionary<FeedType, Recogni
             throw new InvalidDataException("An allow-list pattern timed out; input retained and no output was published.");
         }
 
-        var spans = await AnalyzeAsync(feed, pending.Select(slot => candidates[slot].Value).ToArray(), cancellationToken);
+        var spans = await AnalyzeAsync(feed, pending.Select(slot => candidates[slot].Value).ToArray(), pending.Select(slot => names[slot]).ToArray(),
+            cancellationToken);
         for (int i = 0; i < pending.Count; i++)
         {
             int slot = pending[i];
@@ -208,10 +244,7 @@ public sealed class DetectingFeedProtector(IReadOnlyDictionary<FeedType, Recogni
             }
             var (value, applied, reasons) = Apply(file, field.Value, strong);
             values[field.Id] = value;
-            events[slot] = Event(file, slot, field, Names(applied.Select(a => a.Span.Recognizer)), Names(applied.Select(a => a.Span.Entity)),
-                applied.Max(a => a.Span.Score), value == field.Value ? DetectionDecision.Kept : DetectionDecision.Changed,
-                Names(applied.Select(a => Operator(a.Action.Operator))), reasons,
-                Names(applied.Where(a => !a.Own).Select(a => a.Span.Entity)));
+            events[slot] = Applied(file, slot, field, value, applied, reasons);
         }
 
         var detected = events.ToArray();
@@ -297,9 +330,26 @@ public sealed class DetectingFeedProtector(IReadOnlyDictionary<FeedType, Recogni
     }
 
     /// <summary>
-    /// Sends one message's decoded strings to the embedded Presidio engine in one batch.
+    /// Rejects a number or boolean anywhere under a mapped key: it cannot be protected without changing its JSON type, so
+    /// the message fails closed instead of publishing it (WR-016). Nulls carry no value.
     /// </summary>
-    private static async ValueTask<IReadOnlyList<Span[]>> AnalyzeAsync(FeedType feed, IReadOnlyList<string> texts, CancellationToken cancellationToken)
+    /// <param name="file">The recognizer file.</param>
+    /// <param name="parsed">The JSON parse.</param>
+    /// <exception cref="InvalidDataException">A mapped key holds a number or boolean.</exception>
+    private static void RejectMappedNonStrings(RecognizerFile file, ParsedFeed parsed)
+    {
+        if (JsonFeedParser.NumberOrBooleanFields(parsed).Any(field => file.MappedEntity(JsonFeedParser.PropertyNames(field.Name)) is not null))
+        {
+            throw new InvalidDataException("A personal-data property holds a number or boolean that cannot be protected in its JSON type; input retained and no output was published.");
+        }
+    }
+
+    /// <summary>
+    /// Sends one message's decoded strings to the embedded Presidio engine in one batch, each with the property names of its
+    /// key path as Presidio context words, as Presidio's own <c>analyze_dict</c> passes a key.
+    /// </summary>
+    private static async ValueTask<IReadOnlyList<Span[]>> AnalyzeAsync(FeedType feed, IReadOnlyList<string> texts, IReadOnlyList<IReadOnlyList<string>> contexts,
+        CancellationToken cancellationToken)
     {
         if (texts.Count == 0)
         {
@@ -309,7 +359,7 @@ public sealed class DetectingFeedProtector(IReadOnlyDictionary<FeedType, Recogni
         await EngineGate.WaitAsync(cancellationToken);
         try
         {
-            string json = PythonHost.Call("analyze_strings", FeedCatalog.Get(feed).FolderName, JsonSerializer.Serialize(texts));
+            string json = PythonHost.Call("analyze_strings", FeedCatalog.Get(feed).FolderName, JsonSerializer.Serialize(texts), JsonSerializer.Serialize(contexts));
             using var document = JsonDocument.Parse(json);
             result = document.RootElement.EnumerateArray().Select(found => found.EnumerateArray().Select(span => new Span(
                 span[0].GetInt32(), span[1].GetInt32(), span[2].GetString() ?? "", span[3].GetDouble(), span[4].GetString() ?? "")).ToArray()).ToArray();
@@ -331,12 +381,35 @@ public sealed class DetectingFeedProtector(IReadOnlyDictionary<FeedType, Recogni
     }
 
     /// <summary>
-    /// Creates a value-free event.
+    /// Creates the event of a string whose spans got their actions.
+    /// </summary>
+    private static DetectionEvent Applied(RecognizerFile file, int slot, FeedField field, string value,
+        IReadOnlyList<(Span Span, AnonymizerAction Action, bool Own)> applied, ReviewReason reasons) =>
+        Event(file, slot, field, Names(applied.Select(a => a.Span.Recognizer)), Names(applied.Select(a => a.Span.Entity)),
+            applied.Max(a => a.Span.Score), value == field.Value ? DetectionDecision.Kept : DetectionDecision.Changed,
+            Names(applied.Select(a => Operator(a.Action.Operator))), reasons, Names(applied.Where(a => !a.Own).Select(a => a.Span.Entity)));
+
+    /// <summary>
+    /// Creates a value-free event, located by the string's JSON Pointer in the forms the detection log uses (WR-018).
     /// </summary>
     private static DetectionEvent Event(RecognizerFile file, int slot, FeedField field, string recognizer, string entity, double score, DetectionDecision decision,
         string op = "", ReviewReason reasons = ReviewReason.None, string noActionEntities = "") =>
-        new(slot, field.Value.Length, Shape(field.Value), recognizer, entity, Math.Round(score, 2, MidpointRounding.AwayFromZero), decision, field.Offset, op, reasons,
-            file.Threshold, noActionEntities);
+        new(slot, field.Value.Length, Shape(field.Value), recognizer, entity, Math.Round(score, 2, MidpointRounding.AwayFromZero), decision, op, reasons,
+            file.Threshold, noActionEntities, field.Id, SafePointer(file, field), field.Name);
+
+    /// <summary>
+    /// Returns a string's JSON Pointer with each property name the recognizer file does not declare replaced by <c>?</c>.
+    /// In dynamic-key JSON a property name can itself be a value, so only declared names and array indexes are written in
+    /// the value-free detection log (WR-018); the full pointer is written only under WR-020.
+    /// </summary>
+    private static string SafePointer(RecognizerFile file, FeedField field)
+    {
+        // The instance pointer and the wildcard path have the same segments; a "*" in the path marks an array index.
+        string[] instance = field.Id.Split('/');
+        string[] path = field.Name.Split('/');
+        return string.Join('/', instance.Select((segment, i) => segment.Length == 0 || (i < path.Length && path[i] == "*") ||
+            file.Declares(JsonFeedParser.Unescape(segment)) ? segment : "?"));
+    }
 
     /// <summary>
     /// Returns the last line of a bridge error (the Python exception's own message), at most 200 characters, ending with a
