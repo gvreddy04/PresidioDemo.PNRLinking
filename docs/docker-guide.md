@@ -82,7 +82,7 @@ Expected output:
 ```text
 Connected to Solace tcp://solace:55555 (VPN default) as presidio-worker-container.
 Initializing embedded local Presidio and the bundled NLP model...
-PNR worker reading q.pnr.raw; output airline/pnr/protected; dead letter q.pnr.dlq.
+PNR-Linking worker reading q.pnr-linking.raw; output airline/pnr-linking/protected; dead letter q.pnr-linking.dlq.
 READY: 1 feed workers on Solace.
 ```
 
@@ -108,7 +108,7 @@ The sender connects as `presidio-worker-local-sender`, so it does not disconnect
 docker logs presidio-worker-local
 ```
 
-Expect 2 `PUBLISHED` lines, one for each PNR sample, and no `DEAD-LETTERED` line; no PNR negative sample is supplied. (This container run has not been repeated on this branch; the test harness gives the same result.) To inspect protected messages, open PubSub+ Manager at http://localhost:8080 (user `admin`) and create a queue subscribed to `airline/>` before sending the samples; a topic keeps nothing without a subscriber.
+Expect 2 `PUBLISHED` lines (`PNR_LINKING.txt` and `PNR_LINKING_02_Negative_Testing.txt`) and 1 `DEAD-LETTERED` line (`PNR_LINKING_03_Negative_Testing.txt`, a date of birth sent as a JSON number). (This container run has not been repeated for this worker; the test harness gives the same result.) To inspect protected messages, open PubSub+ Manager at http://localhost:8080 (user `admin`) and create a queue subscribed to `airline/>` before sending the samples; a topic keeps nothing without a subscriber.
 
 ### Step 7: Stop when you are done
 
@@ -140,11 +140,11 @@ In `deploy\.env.dev`, replace the DemoAir stand-ins with the real Dev values:
 
 - `SOLACE_PASSWORD`, `Solace__Host`, `Solace__Vpn` and `Solace__Username`.
 - `Solace__ClientName`: a name of your own. The broker disconnects an existing connection that uses the same client name.
-- The input queue, output topic and dead-letter queue of the PNR route, which is route 0 (`Messaging__Routes__0__…`). Settings that still name another feed stop startup with a message naming the route index and the feed.
+- The input queue, output topic and dead-letter queue of the PNR-Linking route, which is route 0 (`Messaging__Routes__0__…`). The Dev section of `appsettings.json` has no PNR-Linking route, because no Dev destination has been named yet, so the template leaves these empty and the worker stops at startup until all of them are set. Settings that still name another feed stop startup with a message naming the route index and the feed.
 
 `deploy\.env.dev` is git-ignored. Never commit it, and never copy real values into a committed file.
 
-The Dev queues must already exist, because the worker does not create queues outside the Local environment. The Dev user must be allowed to consume the PNR input queue and publish to the PNR output topic.
+The Dev queues must already exist, because the worker does not create queues outside the Local environment. The Dev user must be allowed to consume the PNR-Linking input queue and publish to the PNR-Linking output topic.
 
 ### Step 9: Add the broker's CA certificate
 
@@ -247,7 +247,7 @@ The script prints the pushed digest. Reference the digest or the commit tag in t
 | Certificates | None | `deploy\certs` |
 | Container | `presidio-worker-local` | `presidio-worker-dev` |
 | Settings | `Environments:Local` in `src/PresidioDemo.Worker/appsettings.json`, plus compose variables | `Environments:Dev`, overridden by `deploy\.env.dev` |
-| Feeds | PNR | PNR |
+| Feeds | PNR-Linking | PNR-Linking, once `deploy\.env.dev` supplies the route |
 | Queues | Created by the worker on startup | Must already exist |
 | Broker connection | `tcp://solace:55555`, no TLS | `tcps://`, CA from `deploy\certs` |
 | Memory limit | 3 GB | 3 GB |

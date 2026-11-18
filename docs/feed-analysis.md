@@ -1,71 +1,71 @@
-# PNR feed sample review and structure
+# PNR-Linking feed sample review and structure
 
-> **Superseded design.** This review describes the per-feed parsers, field policies and the three XML files (`feed-policies.xml`, `xdr-layouts.xml`, `reference-layouts.xml`) that decoded-text detection replaced. Those files and parsers are removed. Protection now uses the generic decoder and the PNR recognizer file; see [Decoded-text detection](../README.md#decoded-text-detection). The sample review, the structure findings and the field meanings below stay valid as analysis; the configuration notes refer to the removed design. The protection results they produced are frozen, value-free, in [tests/fixtures/parity-baseline.json](../tests/fixtures/parity-baseline.json).
+> **Superseded design.** The removed design protected this feed with an inline field policy per JSON path in `feed-policies.xml`, and later with key-based formats, keeps and PNR anchors in the earlier recognizer format. Both are removed. Protection now uses the shared JSON parser and the Presidio-style recognizer file `pnr-linking.xml`; see [Decoded-text detection](../README.md#decoded-text-detection). The sample review, the structure findings and the field meanings below stay valid as analysis. The protection results of the removed design are frozen, value-free, in [tests/fixtures/parity-baseline.json](../tests/fixtures/parity-baseline.json).
 >
-> This branch (`PNR-Worker`) keeps the PNR feed only. The review of the other feeds, and the configuration examples of the removed design (which used one of those feeds), are in the repository history at commit `dffbdad`.
+> This worker keeps the PNR-Linking feed only. The review of the other feeds is in the repository history at commit `dffbdad`.
 
-Both files in `docs/sample-docs/PNR/` were reviewed without changing source bytes. Each is an MQ text export: `A` rows carry metadata and `X` rows carry hexadecimal payload bytes. Both are binary payloads, and neither is a negative test.
+The three files in `docs/sample-docs/PNR-Linking/` were reviewed without changing source bytes. Each is an MQ text export: `A` rows carry metadata and `X` rows carry hexadecimal payload bytes. The payload is UTF-8 JSON (CCSID 1208) with an array root. Two of the files end in `_Negative_Testing`. Both parse correctly; they test what happens after parsing.
 
-## Binary representation
+## JSON representation
 
-The examples use big-endian 32-bit words and counted ASCII strings padded to four bytes. A counted string consists of its byte length, that many text bytes and zero padding. An empty string is a length word of zero, with no value or padding. Missing text is therefore represented structurally, not by a special character. Actual `*` characters in populated fields are masked/placeholder content and are not universal missing-field markers.
+`PnrLinkingParser` in `src/PresidioDemo.Core/Decoder` sets the route and the required array root and inherits `JsonFeedParser`. The shared class reads the payload with `System.Text.Json.Utf8JsonReader` and records each scalar's exact byte span. Every JSON scalar becomes a field:
 
-The initial PNR word is two. The removed schema checked this observed discriminator. Subsequent words and string counts are parsed separately, and offsets are calculated while reading each message.
+- its instance path is a JSON Pointer such as `/0/Customers/1/FirstName`;
+- its key path uses `*` for array indexes, such as `/*/Customers/*/FirstName`.
 
-A scanner can read some pairs of raw words as a short counted string: for example `00000001 31000000` looks like a length-one string containing `1` with three zero pad bytes. The generic decoder therefore treats only strings of four or more printable characters as text and keeps shorter spans as raw words (WR-015).
+Every JSON string is a detection candidate. Its property names (`Customers`, `FirstName`) are the detection context. Numbers, booleans and nulls are never candidates and never change.
 
-## PNR
+Duplicate or ambiguous property names, a wrong root, trailing data, truncated JSON and an MQ export with a CCSID other than 1208 reject the complete message. A rebuilt message keeps the original bytes of every unchanged scalar, property name, separator, whitespace and empty container. Inside a changed string, every unchanged character keeps its original spelling, escapes included. Validation re-parses the output and compares every byte gap, so a change outside the protected strings is refused.
 
-PNR has two examples, PNR.txt (5,452 payload bytes) and PNR_02.txt (1,780). The XDR schema follows the sections of the P2 PNR Record Layout (keys 01, 10, 20, 30, 40, 43, 50, 60, 80, C0, D0, D2, D8). Repeating sections are rpcgen linked lists: a `1` word precedes each element and a `0` word ends the list. The spec describes the MQ/RTA P2 record and excludes the real-time C-structure feed, so it supplies field meanings, not wire order; element shapes are fitted to both samples, and lists that are empty in both samples rejected any content in the removed design. The reference layout mapped 53 strings, and the PNR policy had 92 fields.
+## PNR-Linking
 
-Mixed record texts (SSR/OSI facts, frequent-flyer accounts, remarks and fare references) use ordered variants keyed by record code, such as DOCS, CTCE, CTCM and TKNE. The first matching pattern masks the personal values while the record syntax stays unchanged; a catch-all masks unrecognized records whole. PNR.txt has 80 masked and 74 kept values; PNR_02.txt has 24 and 33.
+PNR_LINKING.txt (2,217 payload bytes) links two customers of one booking. It has 76 scalars, 56 of them strings:
 
-Some PNR records use `*` between adjacent fields. Shared loyalty, sensitive-attribute and financial-information rules use `#` for masking so separators remain distinguishable when the protected record is parsed again. Other masks use `*`. The output is validated and can be processed a second time without changes.
+- the link record: link identifiers, link type and version, reasons and change type, the owning record locator `PNROwner`, and timestamps;
+- the flight-leg references;
+- a `Customers` array. Each customer carries a passenger ID, an order ID, first and last names, a booked-as name (`SURNAME/GIVEN`), a record locator `UaRecordLocator`, a date of birth, loyalty account numbers, a status and nested `FlightSegment` and `FlightLeg` objects.
 
-The two PNR samples do not establish a general producer contract, all collection shapes, unknown word meanings or passenger associations, and neither the spec nor the samples carry a stable passenger ID. In the removed design, unsupported structures went to the dead-letter queue without publication until a reviewed schema represented them; decoded-text detection scans them instead (WR-016).
+Many optional properties are `null`. `OperatingFlightNumber` is a JSON number.
+
+The two negative samples differ from PNR_LINKING.txt in one place each:
+
+- PNR_LINKING_02_Negative_Testing.txt (2,236 bytes) adds a `MiddleName` to the first customer. The removed design rejected it as a field without a configured policy.
+- PNR_LINKING_03_Negative_Testing.txt (2,213 bytes) sends the first customer's `DOB` as a JSON number instead of a string.
+
+The samples do not establish a general producer contract. Array position never establishes passenger identity.
+
+## Protection with `pnr-linking.xml`
+
+Each string is decided on its own, in this order:
+
+| Step | Recognizer file element | Example keys | Result |
+| --- | --- | --- | --- |
+| 1 | `<entity_mapping>` | `FirstName`, `LastName`, `MiddleName`, `BookedAs`, `DOB`, `PaxId`, `PaxLinkId`, `PaxFlightLegLinkId`, `OrderId`, `UserId`, the loyalty account numbers, `transitionLinkSegments` | The whole string is the mapped entity and gets that entity's anonymizer. All of these mask with `*` at the same width. |
+| 2 | `<keys_to_skip>` | `PNROwner`, `UaRecordLocator`, link type and version, flight-leg IDs, airports, timestamps, status | The string is published unchanged without analysis. The record locators link the bookings, so they stay unchanged. |
+| 3 | `<allow_list>` | none: the item is a timestamp shape | A string that matches an item end to end is published unchanged. |
+| 4 | Presidio | the reason keys `ChangeReason`, `LinkReasonAtCreation` and `ReasonForLeaving`, and any key the file does not name | Local Presidio analyzes the string. The property names of its key path are passed as Presidio context words, as Presidio's own `analyze_dict` passes a key. Each span at or above the threshold gets its entity's anonymizer; a string with nothing detected is published unchanged and listed for review. |
+
+A key is matched ignoring case, anywhere on the key path. The innermost mapped name wins. A number or boolean under a mapped key cannot be protected in its JSON type, so the message is dead-lettered (WR-016).
 
 ## Reviewed samples and results
 
-Counts below describe populated binary text/capture fields under the removed field policies. Fixed structural tags, empty text slots and raw framing words are excluded. Retained verification evidence records source hashes and calculated field spans without personal values.
+| Sample | Payload bytes | Result | Changed strings | Reason |
+| --- | ---: | --- | ---: | --- |
+| PNR_LINKING.txt | 2,217 | Published | 14 | |
+| PNR_LINKING_02_Negative_Testing.txt | 2,236 | Published | 15 | The extra `MiddleName` is masked by its key |
+| PNR_LINKING_03_Negative_Testing.txt | 2,213 | Dead-lettered | | A personal-data property holds a number |
 
-| Sample | Payload bytes | Kept | Masked |
-| --- | ---: | ---: | ---: |
-| PNR.txt | 5,452 | 74 | 80 Mask |
-| PNR_02.txt | 1,780 | 33 | 24 Mask |
-
-With decoded-text detection, both samples are published through the real worker and local Presidio. Of the 104 values the former field policies protected, 97 are protected and 7 are approved exceptions (strings of one to three characters, WR-015). Both identified PNR occurrences stay unchanged, and source hashes, payload sizes, raw words, string counts, zero padding, record syntax, MQ headers, row framing and newline style are preserved.
-
-## Configuration behavior (removed design)
-
-The removed design kept three XML files with these responsibilities:
-
-| File | Responsibility |
-| --- | --- |
-| `reference-layouts.xml` | Readable field names, baseline offsets/lengths and optional capture mappings |
-| `xdr-layouts.xml` | Ordered binary words, counted strings, padding, arrays and optional groups |
-| `feed-policies.xml` | Per-feed Keep/Mask actions, with an optional shared catalog |
-
-The worker validated them together before it connected to the broker; a restart applied changes. Every exposed scalar needed exactly one policy, unknown structure went to the dead-letter queue without publication, and new structural variations required reviewed XML. Decoded-text detection replaced all three files with `pnr.xml`.
-
-## Reviewed field names
-
-PNR names follow the P2 record layout sections and replace the earlier fixed-offset aliases.
-
-| Original field | Policy alias | Evidence and limits |
-| --- | --- | --- |
-| `/names/*/surname`, `/firstNames/*/givenName` | `surname`, `givenName` | P2 key 20 `P20PSNM` and key 30 `P20PNAM`; one linked-list item per name, never a passenger identity |
-| `/facts/*/text` | `factText` | P2 key 40 `P20PFTX` SSR/OSI text; ordered variants for DOCS, CTCE, CTCM and other record codes |
-| `/frequentFlyers/*/account` | `frequentFlyerAccount` | P2 key 43 `P20PFQT`/`P20ESTX` FQTV number and tier text |
-| `/remarks/*/text`, `/fareReferences/*/text`, `/etktPayments/*/passengerName` | `remarkText`, `fareReferenceText`, `etktPassengerName` | Remark, fare-reference and electronic-ticket payment records inside the PNR; variants mask personal captures and keep record syntax |
+These are the outcomes the monorepo reported for these samples at `dffbdad`. The parity baseline lists 14 protected values of PNR_LINKING.txt and its 3 record locators. All 14 values are protected, so there are no approved parity exceptions. The record locators, the numbers, booleans and nulls, the MQ headers, the row framing and the newline style are unchanged. The two reason strings are listed for review because nothing is detected in them.
 
 ## Reproduce verification
 
 ```powershell
 dotnet build PresidioDemo.slnx
-dotnet run --project tests/FeedPipelineChecks
-dotnet run --project tests/WorkerChecks
-src/.venv/Scripts/python.exe -m unittest discover -s tests/unit-tests -p test_*.py -v
+dotnet run --project tests/GenericCodecChecks --no-build
+dotnet run --project tests/FeedPipelineChecks --no-build
+dotnet run --project tests/DetectionParityChecks --no-build -- spike
+src/.venv/Scripts/python.exe -m unittest discover -s tests/unit-tests -p "test_*.py" -v
 src/.venv/Scripts/python.exe tests/run_sample_verification.py
 ```
 
-The sample verification runs both PNR samples through `tests/FeedPipelineHarness`. It keeps the outputs, transaction logs and a value-free `verification.json` in a fresh `.test-runs/e2e-*` folder. The harness exits with code 0 because both samples are published.
+The sample verification runs the three samples through `tests/FeedPipelineHarness`. It keeps the outputs, transaction logs and a value-free `verification.json` in a fresh `.test-runs/e2e-*` folder. The harness exits with code 2 because PNR_LINKING_03 is dead-lettered by design.
