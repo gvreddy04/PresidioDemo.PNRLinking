@@ -4,7 +4,7 @@ using PresidioDemo.Core.Models;
 namespace PresidioDemo.Core.Pipeline;
 
 /// <summary>
-/// Selects the decoded-text codec for a delivery route: the generic XDR codec (no per-feed schema).
+/// Selects the decoded-text codec for a delivery route: the shared System.Text.Json parser for the JSON feed.
 /// </summary>
 public static class FeedCodecRegistry
 {
@@ -18,7 +18,7 @@ public static class FeedCodecRegistry
     /// <returns>The codec.</returns>
     public static IFeedCodec Create(FeedType feed) => feed switch
     {
-        FeedType.PNR => new PnrDecoder(),
+        FeedType.PnrLinking => new PnrLinkingParser(),
         _ => throw new InvalidDataException("No codec is registered for this feed.")
     };
 
