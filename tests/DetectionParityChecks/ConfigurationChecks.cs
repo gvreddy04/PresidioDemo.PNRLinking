@@ -4,8 +4,8 @@ using PresidioDemo.Core.Protection;
 namespace PresidioDemo.DetectionParity;
 
 /// <summary>
-/// Checks the shipped recognizer file (WR-014): it loads, declares the PNR feed's custom recognizers, and every entity type
-/// of the frozen baseline is covered by a custom recognizer or by a Presidio predefined entity.
+/// Checks the shipped recognizer file (WR-014): it loads, declares the PNR-Linking feed's recognizers and key mappings, and
+/// every entity type of the frozen baseline is covered by a key mapping, a custom recognizer or a Presidio predefined entity.
 /// </summary>
 public static class ConfigurationChecks
 {
@@ -35,26 +35,33 @@ public static class ConfigurationChecks
         string directory = Path.Combine(root, "src", "PresidioDemo.Core", "Configuration", "recognizers");
         var files = RecognizerFileReader.ReadAll(directory);
         int passed = 0;
-        Check(files.Count == FeedCatalog.All.Count && files.ContainsKey(FeedType.PNR), "the PNR recognizer file loads", ref passed);
-        var pnr = files[FeedType.PNR];
-        Check(pnr.Recognizers.Any(r => r.Entity == "DATE_OF_BIRTH") && pnr.Recognizers.Any(r => r.Entity == "PERSON"),
-            "date-of-birth and passenger-name recognizers are declared", ref passed);
-        Check(pnr.Anonymizers.ContainsKey(FeedAnonymizer.DefaultEntity), "the shipped file sets a DEFAULT anonymizer", ref passed);
+        Check(files.Count == FeedCatalog.All.Count && files.ContainsKey(FeedType.PnrLinking), "the PNR-Linking recognizer file loads", ref passed);
+        var linking = files[FeedType.PnrLinking];
+        Check(linking.MappedEntity(["Customers", "DOB"]) == "DATE_OF_BIRTH" && linking.MappedEntity(["Customers", "FirstName"]) == "PERSON"
+            && linking.Recognizers.Any(r => r.Entity == "PERSON"), "date-of-birth and passenger-name keys are mapped and a passenger-name recognizer is declared", ref passed);
+        Check(linking.Anonymizers.ContainsKey(FeedAnonymizer.DefaultEntity), "the shipped file sets a DEFAULT anonymizer", ref passed);
         var baseline = ParityBaseline.Load(root);
         var uncovered = UncoveredEntities(baseline, files);
-        Check(uncovered.Count == 0, "every baseline entity has a custom recognizer or a Presidio predefined entity"
+        Check(uncovered.Count == 0, "every baseline entity has a key mapping, a custom recognizer or a Presidio predefined entity"
             + (uncovered.Count == 0 ? "" : ": missing " + string.Join(", ", uncovered)), ref passed);
+        var wrongKey = baseline.Protected.Where(e => linking.MappedEntity(Names(e.Location)) != e.Entity).Select(e => e.Location).ToArray();
+        Check(wrongKey.Length == 0, "every baseline value sits under a key mapped to its baseline entity"
+            + (wrongKey.Length == 0 ? "" : ": not mapped " + string.Join(", ", wrongKey)), ref passed);
+        Check(baseline.Pnrs.All(e => linking.Skips(Names(e.Location))), "every baseline record locator sits under a skipped key, so it stays unchanged", ref passed);
         var withoutDateOfBirth = new Dictionary<FeedType, RecognizerFile>(files)
         {
-            [FeedType.PNR] = pnr with { Recognizers = pnr.Recognizers.Where(r => r.Entity != "DATE_OF_BIRTH").ToArray() },
+            [FeedType.PnrLinking] = linking with
+            {
+                EntityMapping = linking.EntityMapping!.Where(pair => pair.Value != "DATE_OF_BIRTH").ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+            },
         };
-        Check(UncoveredEntities(baseline, withoutDateOfBirth).Contains("PNR DATE_OF_BIRTH"),
+        Check(UncoveredEntities(baseline, withoutDateOfBirth).Contains("PNR-Linking DATE_OF_BIRTH"),
             "the coverage check reports a baseline entity removed from its feed's file", ref passed);
         return passed;
     }
 
     /// <summary>
-    /// Returns the baseline entity types, per feed, that neither a custom recognizer nor a Presidio predefined entity covers.
+    /// Returns the baseline entity types, per feed, that no key mapping, custom recognizer or Presidio predefined entity covers.
     /// </summary>
     /// <param name="baseline">The frozen baseline.</param>
     /// <param name="files">The recognizer files by feed.</param>
@@ -63,10 +70,17 @@ public static class ConfigurationChecks
         baseline.Protected
             .Select(e => (Type: FeedCatalog.All.Single(f => f.FolderName == e.Feed).Type, Name: e.Feed, e.Entity))
             .Distinct()
-            .Where(e => !files[e.Type].Recognizers.Any(r => r.Entity == e.Entity) && !PredefinedEntities.Contains(e.Entity))
+            .Where(e => !(files[e.Type].EntityMapping?.Values.Contains(e.Entity) ?? false) && !files[e.Type].Recognizers.Any(r => r.Entity == e.Entity)
+                && !PredefinedEntities.Contains(e.Entity))
             .Select(e => e.Name + " " + e.Entity)
             .Order(StringComparer.Ordinal)
             .ToArray();
+
+    /// <summary>
+    /// Returns the property names of a JSON Pointer such as <c>/0/Customers/1/DOB</c>: its segments without array indexes.
+    /// </summary>
+    private static string[] Names(string pointer) =>
+        pointer.Split('/').Skip(1).Where(segment => !segment.All(char.IsAsciiDigit)).Select(PresidioDemo.Core.Decoder.JsonFeedParser.Unescape).ToArray();
 
     /// <summary>
     /// Throws when a condition fails.

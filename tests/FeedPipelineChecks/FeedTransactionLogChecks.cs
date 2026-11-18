@@ -17,21 +17,21 @@ static class FeedTransactionLogChecks
     public static void Run()
     {
         {
-            var delivery = new FeedDelivery(FeedType.PNR, Guid.NewGuid(), "same-name.bin", "fixture");
-            // A fictional binary string and its same-width mask, as the PNR feed protects it.
-            var input = new FeedMessage(delivery, Encoding.ASCII.GetBytes("MILLER/JORDAN"));
-            var result = new FeedWorkflowResult(Encoding.ASCII.GetBytes("######/######"),
-                [new("0", "0", "MILLER/JORDAN", 0)], [new("0", "0", "######/######", 0)]);
+            var delivery = new FeedDelivery(FeedType.PnrLinking, Guid.NewGuid(), "same-name.bin", "fixture");
+            // A fictional JSON name and its same-width mask, as the PNR-Linking feed protects it.
+            var input = new FeedMessage(delivery, Encoding.ASCII.GetBytes("[{\"BookedAs\":\"MILLER/JORDAN\"}]"));
+            var result = new FeedWorkflowResult(Encoding.ASCII.GetBytes("[{\"BookedAs\":\"*************\"}]"),
+                [new("/0/BookedAs", "/*/BookedAs", "MILLER/JORDAN")], [new("/0/BookedAs", "/*/BookedAs", "*************")]);
             // The harness passes the values-mode detection block; a fictional one is enough to check its place.
-            string block = "PNR 0 DETECTION PUBLISHED file=- fields=1 pii=1 non-pii=0 review=0" + Environment.NewLine + "  PII fields (changed)" + Environment.NewLine
-                + "    slot 0 @0x0000  \"MILLER/JORDAN\" -> \"######/######\"  recognizer=passengerName entity=PERSON score=0.90 operator=mask decision=changed" + Environment.NewLine;
+            string block = "PNR-Linking 0 DETECTION PUBLISHED file=- fields=1 pii=1 non-pii=0 review=0" + Environment.NewLine + "  PII fields (changed)" + Environment.NewLine
+                + "    \"/0/BookedAs\"  \"MILLER/JORDAN\" -> \"*************\"  recognizer=entity_mapping entity=PERSON score=1.00 operator=mask decision=changed" + Environment.NewLine;
             string text = FeedLoggers.Format(input, result, null, block);
             string[] sections = text.Split("AFTER ANONYMIZATION");
-            Require(sections.Length == 2 && sections[0].Contains("MILLER/JORDAN") && !sections[1].Contains("MILLER/JORDAN") && sections[1].Contains("######/######"), "Comparison sections mix original and protected data.");
+            Require(sections.Length == 2 && sections[0].Contains("MILLER/JORDAN") && !sections[1].Contains("MILLER/JORDAN") && sections[1].Contains("*************"), "Comparison sections mix original and protected data.");
             Require(text.Contains("BEFORE ANONYMIZATION") && text.Contains(new string('=', 72)), "Missing headings or separators.");
             Require(sections[0].Contains(Encoding.UTF8.GetString(input.Content.Span)) && sections[1].Contains(Encoding.UTF8.GetString(result.Content.Span)), "Complete payload data is missing.");
             RequireOrder(text, "BEFORE ANONYMIZATION", "Complete feed data", Encoding.UTF8.GetString(input.Content.Span),
-                "Plain text:", Encoding.UTF8.GetString(input.Content.Span), "Detection (binary offsets count from the start of the payload shown above):", block, "AFTER ANONYMIZATION", "Complete feed data", Encoding.UTF8.GetString(result.Content.Span));
+                "Plain text:", Encoding.UTF8.GetString(input.Content.Span), "Detection (each JSON Pointer locates a string in the payload shown above):", block, "AFTER ANONYMIZATION", "Complete feed data", Encoding.UTF8.GetString(result.Content.Span));
             Require(!sections[1].Contains("DETECTION") && !sections[1].Contains("Plain text:"), "After section includes an unrequested view.");
             Require(!text.Contains("Parsed fields"), "The detection block replaces the parsed field list.");
             Require(!FeedLoggers.Format(input, result, null).Contains("Detection ("), "Without a block there is no detection section.");

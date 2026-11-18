@@ -173,7 +173,9 @@ string Correlation(int i)
     return inputs.Count(input => Path.GetFileName(input.Path).Equals(name, StringComparison.OrdinalIgnoreCase)) > 1 ? $"{i}-{name}" : name;
 }
 
-// Lists, per feed, every review-group field across the run (WR-021), by slot and payload offset. No string value is
+// Lists, per feed, every review-group field across the run (WR-021), by its key path with array indexes as *, which
+// keeps real property names because this file stays local (in dynamic-key JSON a property name can itself be a value). A
+// path holding anything outside printable ASCII is JSON-encoded, so no name can break or forge a line. No string value is
 // written: only the review reasons, character shapes, a count and the file names.
 static string Summary(IReadOnlyList<FeedType> inputFeeds, IReadOnlyList<(FeedType Feed, string File, IReadOnlyList<DetectionEvent> Events)> detected)
 {
@@ -185,7 +187,7 @@ static string Summary(IReadOnlyList<FeedType> inputFeeds, IReadOnlyList<(FeedTyp
         text.AppendLine($"{FeedCatalog.Get(feed).FolderName}  review fields ({inputFeeds.Count(f => f == feed)} files)");
         var rows = detected.Where(d => d.Feed == feed)
             .SelectMany(d => d.Events.Where(e => DetectionLog.Group(e) == DetectionGroup.Review).Select(e => (d.File, Event: e)))
-            .GroupBy(r => (Field: r.Event.Offset is int offset ? $"slot {r.Event.Slot} @0x{offset:X4}" : $"slot {r.Event.Slot}", Reason: DetectionLog.Reason(r.Event.Reasons)))
+            .GroupBy(r => (Field: Printable(r.Event.Pattern), Reason: DetectionLog.Reason(r.Event.Reasons)))
             .OrderBy(g => g.Key.Field, StringComparer.Ordinal).ThenBy(g => g.Key.Reason, StringComparer.Ordinal)
             .ToArray();
         if (rows.Length == 0)
@@ -203,6 +205,10 @@ static string Summary(IReadOnlyList<FeedType> inputFeeds, IReadOnlyList<(FeedTyp
     }
     return text.ToString();
 }
+
+// Returns a path as it is when it is printable ASCII and does not start with a quote; otherwise JSON-encoded (WR-021).
+static string Printable(string path) =>
+    path.Length > 0 && path[0] != '"' && path.All(c => c is >= ' ' and <= '~') ? path : DetectionLog.Encode(path);
 
 static string Write(string path, byte[] content)
 {

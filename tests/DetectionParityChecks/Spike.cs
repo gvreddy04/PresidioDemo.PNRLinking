@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using PresidioDemo.Core.Decoder;
 using PresidioDemo.Core.Logging;
@@ -14,8 +13,8 @@ namespace PresidioDemo.DetectionParity;
 /// One approved parity exception: a baseline-protected value that decoded-text detection publishes (W-011, W-016).
 /// </summary>
 /// <param name="Sample">The sample file name.</param>
-/// <param name="Location">The baseline location.</param>
-/// <param name="Reason">Why it is published: a keep-format match or a binary string shorter than four characters.</param>
+/// <param name="Location">The baseline location (a JSON Pointer).</param>
+/// <param name="Reason">Why it is published, one reason per category.</param>
 /// <param name="ApprovedBy">Who approved it, when recorded; optional (WR-019).</param>
 public sealed record ParityException(string Sample, string Location, string Reason, string? ApprovedBy = null);
 
@@ -24,7 +23,7 @@ public sealed record ParityException(string Sample, string Location, string Reas
 /// </summary>
 /// <param name="Sample">The sample file name.</param>
 /// <param name="Feed">The feed folder name.</param>
-/// <param name="Location">The payload offset.</param>
+/// <param name="Location">The JSON Pointer.</param>
 /// <param name="Length">The value length.</param>
 /// <param name="Entity">The baseline entity.</param>
 /// <param name="Shape">The character shape of the value.</param>
@@ -72,7 +71,7 @@ public static class Spike
         foreach (var entry in baseline.Protected)
         {
             var result = byName[entry.Sample];
-            var (isCaught, before, after, evt) = Inspect(result, entry.Location, entry.Length);
+            var (isCaught, before, after, evt) = Inspect(result, entry.Location);
             if (isCaught)
             {
                 caught.Add(entry);
@@ -121,48 +120,46 @@ public static class Spike
     /// Returns whether a baseline location is protected in the decoded-text output, with the before and after text.
     /// </summary>
     /// <param name="result">The sample result.</param>
-    /// <param name="location">The payload offset.</param>
-    /// <param name="length">The value length.</param>
-    /// <returns>Caught when every non-<c>*</c> character changed.</returns>
-    private static (bool Caught, string Before, string After, DetectionEvent? Event) Inspect(SampleResult result, string location, int length)
+    /// <param name="location">The JSON Pointer.</param>
+    /// <returns>Caught when every non-<c>*</c> character changed, or a value of another length differs.</returns>
+    private static (bool Caught, string Before, string After, DetectionEvent? Event) Inspect(SampleResult result, string location)
     {
-        string before = Value(result.Original, result, location, length, original: true);
+        string before = Value(result.Original, result, location);
         if (result.Output is null)
         {
             return (true, before, "", null);
         }
-        string after = Value(result.Output, result, location, length, original: false);
-        bool caught = before.Zip(after).All(pair => pair.First == '*' || pair.First != pair.Second);
-        return (caught, before, after, Containing(result, location, length));
+        string after = Value(result.Output, result, location);
+        bool caught = before.Length == after.Length ? before.Zip(after).All(pair => pair.First == '*' || pair.First != pair.Second) : before != after;
+        return (caught, before, after, Containing(result, location));
     }
 
     /// <summary>
-    /// Returns the payload bytes at a location in a message.
+    /// Returns the decoded JSON value at a pointer in a message.
     /// </summary>
-    private static string Value(byte[] message, SampleResult result, string location, int length, bool original)
+    private static string Value(byte[] message, SampleResult result, string location)
     {
-        byte[] payload = FeedPayloadReader.ReadPayload(new FeedMessage(new FeedDelivery(result.Feed, Guid.NewGuid(), Path.GetFileName(result.Path), result.Path), message));
-        return Encoding.ASCII.GetString(payload, int.Parse(location, System.Globalization.CultureInfo.InvariantCulture), length);
+        var parsed = DetectionRun.Codec(result.Feed).Parse(new FeedMessage(new FeedDelivery(result.Feed, Guid.NewGuid(), Path.GetFileName(result.Path), result.Path), message));
+        return parsed.Fields.Single(field => field.Id == location).Value;
     }
 
     /// <summary>
-    /// Returns the event of the decoded string that contains a location.
+    /// Returns the event of the decoded string at a pointer.
     /// </summary>
-    private static DetectionEvent? Containing(SampleResult result, string location, int length)
+    private static DetectionEvent? Containing(SampleResult result, string location)
     {
         if (result.Outcome is null || result.Parsed is null)
         {
             return null;
         }
-        int offset = int.Parse(location, System.Globalization.CultureInfo.InvariantCulture);
-        var candidate = XdrFeedDecoder.Candidates(result.Parsed).FirstOrDefault(c => offset >= c.Offset && offset + length <= c.Offset + c.Length);
-        return candidate is null ? null : result.Outcome.Events.FirstOrDefault(e => e.Slot == candidate.Slot);
+        int slot = JsonFeedParser.StringFields(result.Parsed).ToList().FindIndex(field => field.Id == location);
+        return slot < 0 ? null : result.Outcome.Events.FirstOrDefault(e => e.Slot == slot);
     }
 
     /// <summary>
     /// Measures messages per second for one process (one ECS task) with spaCy NER on, and the task count that sustains
-    /// the PNR feed's sizing peak of 400 messages per second (its share of the 2,000 messages per second sized for the
-    /// airline feeds before this branch kept PNR only).
+    /// the PNR-Linking feed's sizing peak of 400 messages per second (its share of the 2,000 messages per second sized
+    /// for the airline feeds before this worker kept PNR-Linking only).
     /// </summary>
     private static async Task<object> Throughput(DetectingFeedProtector protector, IReadOnlyList<string> samples, int rounds)
     {
@@ -199,7 +196,7 @@ public static class Spike
             MessagesPerSecondPerTask = Math.Round(messages / total.Elapsed.TotalSeconds, 1),
             Feeds = rows,
             TasksForPeak = rows.Sum(r => r.Tasks),
-            Assumption = "400 msg/s peak for the PNR feed; one worker process per ECS task"
+            Assumption = "400 msg/s peak for the PNR-Linking feed; one worker process per ECS task"
         };
     }
 

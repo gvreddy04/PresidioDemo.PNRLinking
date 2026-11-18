@@ -5,7 +5,8 @@ namespace PresidioDemo.DetectionParity;
 
 /// <summary>
 /// Checks the Presidio-style recognizer file reader (WR-014): a valid file loads with its switches, custom recognizers,
-/// allow list and anonymizers, and every invalid or retired form stops startup with a value-free message naming it.
+/// JSON key mappings and skipped keys, allow list and anonymizers, and every invalid or retired form stops startup with a
+/// value-free message naming it.
 /// All values are made up.
 /// </summary>
 public static class RecognizerFileChecks
@@ -18,7 +19,7 @@ public static class RecognizerFileChecks
     /// </summary>
     private const string Valid = """
         <?xml version="1.0" encoding="utf-8"?>
-        <recognizers feed="PNR" language="en" default_score_threshold="0.6">
+        <recognizers feed="PNR-Linking" language="en" default_score_threshold="0.6">
           <recognizer name="CryptoRecognizer" type="predefined" enabled="false" />
           <recognizer name="passengerName" type="custom" supported_entity="PERSON">
             <pattern name="surname/given" score="0.9">(?&lt;![A-Z])[A-Z]{2,}/[A-Z]+</pattern>
@@ -30,6 +31,15 @@ public static class RecognizerFileChecks
           <recognizer name="unused" type="custom" supported_entity="ORDER_ID" enabled="false">
             <pattern name="order" score="0.85">ORD\d+</pattern>
           </recognizer>
+          <entity_mapping>
+            <key name="FirstName" entity="PERSON" />
+            <key name="DOB" entity="DATE_OF_BIRTH" />
+            <key name="transitionLinkSegments" entity="SENSITIVE_ATTRIBUTE" />
+          </entity_mapping>
+          <keys_to_skip>
+            <key name="PNROwner" />
+            <key name="FlightLegId" />
+          </keys_to_skip>
           <allow_list match="regex">
             <item>\d{4}</item>
             <item>FQT[RS]</item>
@@ -68,17 +78,28 @@ public static class RecognizerFileChecks
             Check(file.ActionFor("PERSON") is ({ Operator: AnonymizerOperator.Mask, MaskingChar: '*' }, true)
                 && file.ActionFor("CREDIT_CARD") is ({ Operator: AnonymizerOperator.Mask, MaskingChar: '#' }, false),
                 "an entity uses its own anonymizer, else DEFAULT", ref passed);
-            var bare = Load(scratch, "<recognizers feed=\"PNR\" />");
+            var bare = Load(scratch, "<recognizers feed=\"PNR-Linking\" />");
             Check(bare.Disabled.Count == 0 && bare.Recognizers.Count == 0 && bare.Threshold == 0.5 && !bare.AllowList.MatchesWhole("1405")
+                && bare.MappedEntity(["FirstName"]) is null && !bare.Skips(["PNROwner"])
                 && bare.ActionFor("PERSON") is ({ Operator: AnonymizerOperator.Replace }, false), "an empty file loads with Presidio's defaults and replace", ref passed);
-            Check(Load(scratch, "<recognizers feed=\"PNR\"><allow_list><item>FQTR</item></allow_list></recognizers>").AllowList is { Regex: false } exact
+            Check(Load(scratch, "<recognizers feed=\"PNR-Linking\"><allow_list><item>FQTR</item></allow_list></recognizers>").AllowList is { Regex: false } exact
                 && exact.MatchesWhole("FQTR") && !exact.MatchesWhole("fqtr"), "an exact allow list compares the whole text exactly", ref passed);
             Check(file.ToBridgeJson().Contains("\"disabled\":[\"CryptoRecognizer\"]", StringComparison.Ordinal)
                 && file.ToBridgeJson().Contains("\"denyList\":[\"MR\",\"MRS\",\"DR\"]", StringComparison.Ordinal), "the bridge JSON carries switches and deny lists", ref passed);
+            // JSON keys: a mapped key makes its whole value the entity, the innermost mapped name on the path wins, and names
+            // compare ignoring case; a skipped key anywhere on the path publishes the value without analysis.
+            Check(file.MappedEntity(["Customers", "firstname"]) == "PERSON" && file.MappedEntity(["Customers", "LastName"]) is null
+                && file.MappedEntity(["transitionLinkSegments", "FirstName"]) == "PERSON" && file.MappedEntity(["transitionLinkSegments", "LinkType"]) == "SENSITIVE_ATTRIBUTE",
+                "entity_mapping maps a key path to the entity of its innermost mapped name, ignoring case", ref passed);
+            Check(file.Skips(["pnrowner"]) && file.Skips(["FlightLegId", "Code"]) && !file.Skips(["Customers", "PaxStatus"]),
+                "keys_to_skip skips a value under a listed name anywhere on its key path, ignoring case", ref passed);
+            Check(file.Declares("dob") && file.Declares("PNROwner") && !file.Declares("Customers"), "mapped and skipped names are declared; others are not", ref passed);
+            Check(!file.ToBridgeJson().Contains("FirstName", StringComparison.Ordinal) && !file.ToBridgeJson().Contains("PNROwner", StringComparison.Ordinal),
+                "key mappings and skipped keys stay in .NET; the bridge JSON does not carry them", ref passed);
 
-            Reject(scratch, "<recognizers feed=\"PNR\"", "not well-formed XML", ref passed);
-            Reject(scratch, "<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x \"y\">]><recognizers feed=\"PNR\" />", "a DTD", ref passed);
-            Reject(scratch, Valid.Replace("feed=\"PNR\"", "feed=\"OTHER\""), "the wrong feed attribute", ref passed);
+            Reject(scratch, "<recognizers feed=\"PNR-Linking\"", "not well-formed XML", ref passed);
+            Reject(scratch, "<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x \"y\">]><recognizers feed=\"PNR-Linking\" />", "a DTD", ref passed);
+            Reject(scratch, Valid.Replace("feed=\"PNR-Linking\"", "feed=\"OTHER\""), "the wrong feed attribute", ref passed);
             Reject(scratch, Valid.Replace("language=\"en\"", "language=\"de\""), "a language other than en", ref passed);
             Reject(scratch, Valid.Replace("0.6", "1.5"), "a threshold above 1", ref passed);
             Reject(scratch, Valid.Replace("ORD\\d+", "(unclosed"), "a pattern that does not compile", ref passed);
@@ -101,6 +122,20 @@ public static class RecognizerFileChecks
             Reject(scratch, Valid.Replace("<context>DOCS NAME</context>", "<context>DOCS</context><rule />"), "an unknown child element", ref passed);
             Reject(scratch, Valid.Replace("</recognizers>", "<rule /></recognizers>"), "an unknown element", ref passed);
             Reject(scratch, Valid.Replace("type=\"predefined\"", "type=\"predefined\" colour=\"red\""), "an unknown attribute", ref passed);
+            Reject(scratch, Valid.Replace("</recognizers>", "<entity_mapping><key name=\"LastName\" entity=\"PERSON\" /></entity_mapping></recognizers>"), "a second entity_mapping", ref passed);
+            Reject(scratch, Valid.Replace("</recognizers>", "<keys_to_skip><key name=\"LinkType\" /></keys_to_skip></recognizers>"), "a second keys_to_skip", ref passed);
+            Reject(scratch, Valid.Replace("<key name=\"DOB\" entity=\"DATE_OF_BIRTH\" />", "<key name=\"DOB\" entity=\"DATE_OF_BIRTH\" /><key name=\"dob\" entity=\"PERSON\" />"),
+                "a key mapped twice, ignoring case", ref passed, "twice");
+            Reject(scratch, Valid.Replace("<key name=\"FlightLegId\" />", "<key name=\"firstname\" />"), "a key both mapped and skipped", ref passed, "both mapped");
+            Reject(scratch, Valid.Replace("entity=\"DATE_OF_BIRTH\" />", "entity=\"date_of_birth\" />"), "a lower-case mapped entity", ref passed);
+            Reject(scratch, Valid.Replace("entity=\"DATE_OF_BIRTH\" />", "entity=\"DEFAULT\" />"), "DEFAULT as a mapped entity", ref passed);
+            Reject(scratch, Valid.Replace("<key name=\"FlightLegId\" />", "<key name=\"*\" />"), "the array wildcard as a key name", ref passed);
+            Reject(scratch, Valid.Replace("<key name=\"FlightLegId\" />", "<key />"), "a key without a name", ref passed);
+            Reject(scratch, Valid.Replace("<key name=\"FlightLegId\" />", "<key name=\"FlightLegId\" entity=\"PERSON\" />"), "an entity on a skipped key", ref passed);
+            Reject(scratch, Valid.Replace("<key name=\"FlightLegId\" />", "<key name=\"FlightLegId\">x</key>"), "a key with content", ref passed);
+            Reject(scratch, Valid.Replace("<key name=\"FlightLegId\" />", "<item>FlightLegId</item>"), "an unknown child of keys_to_skip", ref passed);
+            Reject(scratch, Valid.Replace("<entity_mapping>", "<entity_mapping match=\"path\">"), "an attribute on entity_mapping", ref passed);
+            Reject(scratch, Valid.Replace("<key name=\"PNROwner\" />", "").Replace("<key name=\"FlightLegId\" />", ""), "an empty keys_to_skip", ref passed, "at least one");
             // Elements and attributes of the earlier format fail loudly instead of being ignored.
             Reject(scratch, Valid.Replace("</recognizers>", "<builtIn entity=\"PERSON\" /></recognizers>"), "a retired <builtIn>", ref passed, "no longer supported");
             Reject(scratch, Valid.Replace("</recognizers>", "<keep name=\"time\"><pattern>\\d{4}</pattern></keep></recognizers>"), "a retired <keep>", ref passed, "no longer supported");
@@ -116,13 +151,13 @@ public static class RecognizerFileChecks
     }
 
     /// <summary>
-    /// Writes the content as <c>pnr.xml</c> and reads it.
+    /// Writes the content as <c>pnr-linking.xml</c> and reads it.
     /// </summary>
     private static RecognizerFile Load(string scratch, string content)
     {
-        string path = Path.Combine(scratch, "pnr.xml");
+        string path = Path.Combine(scratch, "pnr-linking.xml");
         File.WriteAllText(path, content);
-        return RecognizerFileReader.Read(path, FeedType.PNR);
+        return RecognizerFileReader.Read(path, FeedType.PnrLinking);
     }
 
     /// <summary>
@@ -134,7 +169,7 @@ public static class RecognizerFileChecks
         {
             Load(scratch, content);
         }
-        catch (InvalidDataException ex) when (ex.Message.StartsWith("Recognizer file pnr.xml", StringComparison.Ordinal)
+        catch (InvalidDataException ex) when (ex.Message.StartsWith("Recognizer file pnr-linking.xml", StringComparison.Ordinal)
             && (phrase is null || ex.Message.Contains(phrase, StringComparison.Ordinal)))
         {
             Console.WriteLine("PASS rejected " + label + " (" + ex.Message + ")");

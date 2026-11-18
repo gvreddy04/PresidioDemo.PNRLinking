@@ -1,4 +1,5 @@
-"""Unit checks for the local detection bridge: spans only, per-feed registries from the Presidio-style file, timeouts."""
+"""Unit checks for the local detection bridge: spans only, per-feed registries from the Presidio-style file, key-path
+context words and timeouts."""
 from pathlib import Path
 import json
 import subprocess
@@ -17,16 +18,22 @@ def config(feed, disabled=(), recognizers=()):
     return json.dumps({"feed": feed, "language": "en", "disabled": list(disabled), "recognizers": list(recognizers)})
 
 
-def custom(name, entity, *patterns, deny_list=(), score=0.9):
+def custom(name, entity, *patterns, deny_list=(), score=0.9, context=()):
     """Return one custom recognizer for the bridge JSON."""
     return {"name": name, "entity": entity, "patterns": [{"name": name, "regex": p, "score": score} for p in patterns],
-            "context": [], "denyList": list(deny_list), "denyListScore": 1.0}
+            "context": list(context), "denyList": list(deny_list), "denyListScore": 1.0}
 
 
 def spans(feed, *texts):
     """Return (entity, matched text, recognizer) per input string from the configured feed."""
     result = json.loads(presidio_demo.analyze_strings(feed, json.dumps(list(texts))))
     return [[(entity, text[start:end], name) for start, end, entity, score, name in found] for text, found in zip(texts, result)]
+
+
+def scores(feed, texts, contexts):
+    """Return the highest score per input string, each analyzed with its own context words."""
+    result = json.loads(presidio_demo.analyze_strings(feed, json.dumps(texts), json.dumps(contexts)))
+    return [max((score for start, end, entity, score, name in found), default=0) for found in result]
 
 
 class DetectionBridgeTests(unittest.TestCase):
@@ -42,24 +49,33 @@ class DetectionBridgeTests(unittest.TestCase):
         presidio_demo.configure_feed(config("OnlyB"))
         presidio_demo.configure_feed(config("NoCards", disabled=["CreditCardRecognizer"]))
         presidio_demo.configure_feed(config("Titles", recognizers=[custom("titles", "TITLE", deny_list=["MR", "DR"])]))
+        presidio_demo.configure_feed(config("Context", disabled=["SpacyRecognizer"],
+                                            recognizers=[custom("memberCode", "MEMBER_CODE", r"ZX\d{4}", score=0.3, context=["membership"])]))
 
-    def test_the_pnr_feed_configures(self):
-        self.assertEqual(sorted(self.feeds), ["PNR"])
+    def test_the_pnr_linking_feed_configures(self):
+        self.assertEqual(sorted(self.feeds), ["PNR-Linking"])
 
-    def test_docs_record_returns_name_date_of_birth_and_gender_spans(self):
-        found = spans("PNR", "DOCSDAHK1/////12MAR85/F//MILLER/JORDAN-1MILLER/JORDAN")[0]
-        self.assertIn(("DATE_OF_BIRTH", "12MAR85", "dateOfBirth"), found)
-        self.assertIn(("GENDER", "F", "gender"), found)
-        self.assertEqual([t for e, t, n in found if n == "passengerName"], ["MILLER/JORDAN", "MILLER/JORDAN"])
-
-    def test_contact_records_return_email_and_phone(self):
-        email, phone = spans("PNR", "CTCEDAHK1/JORDAN.MILLER//DEMOAIR.EXAMPLE-1MILLER/JORDAN", "CTCMDAHK1/3125550142-1MILLER/JORDAN")
-        self.assertIn(("EMAIL_ADDRESS", "JORDAN.MILLER//DEMOAIR.EXAMPLE", "ctceEmail"), email)
-        self.assertIn(("PHONE_NUMBER", "3125550142", "ctcmPhone"), phone)
+    def test_reason_text_returns_the_passenger_name_span(self):
+        found = spans("PNR-Linking", "NAME CORRECTION MILLER/JORDAN", "REBOOKED, CONTACT MILLER/JORDAN-ANN")
+        self.assertIn("MILLER/JORDAN", [t for e, t, n in found[0] if n == "passengerName"][0])
+        self.assertIn("MILLER/JORDAN-ANN", [t for e, t, n in found[1] if n == "passengerName"][0])
 
     def test_built_in_email_is_found_in_free_text(self):
-        found = spans("PNR", "Contact emily.carter@example.com today")[0]
+        found = spans("PNR-Linking", "Contact emily.carter@example.com today")[0]
         self.assertIn("EMAIL_ADDRESS", [entity for entity, text, name in found])
+
+    def test_key_path_context_words_raise_a_matching_recognizer(self):
+        # Each string's property names reach Presidio's context enhancer, as BatchAnalyzerEngine.analyze_dict passes a key.
+        member, remark, none = scores("Context", ["ZX1234", "ZX1234", "ZX1234"], [["Customers", "MembershipCode"], ["Remarks"], []])
+        self.assertGreaterEqual(member, 0.5)
+        self.assertAlmostEqual(remark, 0.3)
+        self.assertAlmostEqual(none, 0.3)
+
+    def test_contexts_must_be_one_list_of_words_per_string(self):
+        with self.assertRaises(ValueError):
+            presidio_demo.analyze_strings("Context", json.dumps(["ZX1234"]), json.dumps([]))
+        with self.assertRaises(ValueError):
+            presidio_demo.analyze_strings("Context", json.dumps(["ZX1234"]), json.dumps([[1]]))
 
     def test_a_custom_recognizer_applies_only_to_its_own_feed(self):
         self.assertIn(("DEMO_CODE", "DEMO-1234", "demoCode"), spans("OnlyA", "ref DEMO-1234")[0])
@@ -86,11 +102,11 @@ class DetectionBridgeTests(unittest.TestCase):
         presidio_demo.configure_feed(config("Slow", recognizers=[custom("slow", "DEMO_CODE", r"(A|AA)+$")]))
         with self.assertRaises(TimeoutError):
             presidio_demo.analyze_strings("Slow", json.dumps(["A" * 40 + "!"]))
-        self.assertIn("passengerName", [n for e, t, n in spans("PNR", "MILLER/JORDAN")[0]], "the next call works normally")
+        self.assertIn("passengerName", [n for e, t, n in spans("PNR-Linking", "MILLER/JORDAN")[0]], "the next call works normally")
 
     def test_offsets_are_utf16_so_dotnet_masks_the_right_characters(self):
         text = "\U0001F600 CONTACT MILLER/JORDAN"
-        found = json.loads(presidio_demo.analyze_strings("PNR", json.dumps([text])))[0]
+        found = json.loads(presidio_demo.analyze_strings("PNR-Linking", json.dumps([text])))[0]
         name = [span for span in found if span[4] == "passengerName"][0]
         utf16 = text.encode("utf-16-le")
         # The name pattern allows spaces, so the match starts at CONTACT, right after the emoji (two UTF-16 units) and a space.
@@ -98,9 +114,9 @@ class DetectionBridgeTests(unittest.TestCase):
         self.assertEqual(utf16[name[0] * 2:name[1] * 2].decode("utf-16-le"), "CONTACT MILLER/JORDAN")
 
     def test_batch_keeps_one_result_per_string_and_rejects_bad_input(self):
-        self.assertEqual(len(spans("PNR", "20261005", "MILLER/JORDAN", "")), 3)
+        self.assertEqual(len(spans("PNR-Linking", "20261005", "MILLER/JORDAN", "")), 3)
         with self.assertRaises(ValueError):
-            presidio_demo.analyze_strings("PNR", json.dumps([1, 2]))
+            presidio_demo.analyze_strings("PNR-Linking", json.dumps([1, 2]))
         with self.assertRaises(ValueError):
             presidio_demo.analyze_strings("NoSuchFeed", "[]")
 

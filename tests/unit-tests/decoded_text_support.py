@@ -8,8 +8,10 @@ import json
 
 PROJECT = Path(__file__).resolve().parents[2]
 FIXTURES = PROJECT / "tests" / "fixtures"
-# No supplied PNR sample is a negative test; a negative sample added later is listed here with its expected reason.
-EXPECTED_REJECTIONS = {}
+# A date of birth sent as a JSON number cannot be protected in its JSON type, so the message is dead-lettered (WR-016).
+EXPECTED_REJECTIONS = {
+    "PNR_LINKING_03_Negative_Testing.txt": "number or boolean that cannot be protected in its JSON type",
+}
 
 
 def payload(message):
@@ -32,6 +34,18 @@ def baseline():
     return document, exceptions
 
 
+def json_scalars(node, path=""):
+    """Yield (path, value) for every JSON scalar, with paths in the baseline's /0/Customers/1/FirstName form."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from json_scalars(value, path + "/" + key.replace("~", "~0").replace("/", "~1"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from json_scalars(value, f"{path}/{index}")
+    else:
+        yield path, node
+
+
 def verify_published(feed, name, original, output, document=None, exceptions=None):
     """Check one published sample; return value-free counts, raise AssertionError on a failed check."""
     if document is None:
@@ -43,21 +57,32 @@ def verify_published(feed, name, original, output, document=None, exceptions=Non
             raise AssertionError(f"{name}: MQ metadata changed")
         if original.endswith(b"\n") != output.endswith(b"\n"):
             raise AssertionError(f"{name}: final newline changed")
-        rows = [len(line) for line in original.splitlines() if line.startswith(b"X ")]
-        # Every protection keeps the width, so the export keeps identical hex rows (WR-004).
-        if rows != [len(line) for line in output.splitlines() if line.startswith(b"X ")]:
+        rows = [len(line) for line in output.splitlines() if line.startswith(b"X ")]
+        width = len(next(line for line in original.splitlines() if line.startswith(b"X ")))
+        # The export keeps its hex row width; only the last row may be shorter (WR-004).
+        if any(row != width for row in rows[:-1]) or rows[-1] > width:
             raise AssertionError(f"{name}: MQ row framing changed")
-    if len(before) != len(after):
-        raise AssertionError(f"{name}: binary payload length changed")
-    # Every action's result is fitted printable ASCII (WR-015, WR-016), whatever operator the recognizer file chooses.
-    for index, (left, right) in enumerate(zip(before, after)):
-        if left != right and not 32 <= right < 127:
-            raise AssertionError(f"{name}: byte {index} changed to a character that is not printable ASCII")
+    left, right = dict(json_scalars(json.loads(before))), dict(json_scalars(json.loads(after)))
+    if list(left) != list(right):
+        raise AssertionError(f"{name}: JSON structure changed")
+    for path, value in left.items():
+        if not isinstance(value, str):
+            if type(right[path]) is not type(value) or right[path] != value:
+                raise AssertionError(f"{name}: a number, boolean or null at {path} changed")
+            continue
+        published = right[path]
+        if not isinstance(published, str) or len(published) != len(value):
+            raise AssertionError(f"{name}: the string at {path} changed its width")
+        # Every action's result is fitted printable ASCII (WR-015, WR-016), whatever operator the recognizer file chooses.
+        if any(a != b and not " " <= b <= "~" for a, b in zip(value, published)):
+            raise AssertionError(f"{name}: the string at {path} gained a character that is not printable ASCII")
+    if len(before) != len(after) and before.isascii():
+        raise AssertionError(f"{name}: an ASCII payload changed its length")
     for entry in document["protected"]:
         if entry["sample"] != name:
             continue
-        start, length = int(entry["location"]), entry["length"]
-        caught = all(b == 0x2A or b != a for b, a in zip(before[start:start + length], after[start:start + length]))
+        value, published = left[entry["location"]], right[entry["location"]]
+        caught = all(a == "*" or a != b for a, b in zip(value, published))
         if caught:
             checks["protected"] += 1
         elif (name, entry["location"]) in exceptions:
