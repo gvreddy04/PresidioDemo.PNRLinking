@@ -1,8 +1,9 @@
 """The PNR-Linking feed through the real workers, the JSON parser and local Presidio (V-07, V-08, V-05 through the harness)."""
 import json
+import re
 import unittest
 
-from decoded_text_support import EXPECTED_REJECTIONS, PROJECT, baseline, json_scalars, payload, verify_published
+from decoded_text_support import EXPECTED_REJECTIONS, PROJECT, baseline, in_scope, json_scalars, payload, verify_published
 from pipeline_harness import run
 from test_feed_logs import blocks, leaked_values
 
@@ -36,18 +37,23 @@ class DecodedTextFeedTests(unittest.TestCase):
         cls.harness = run(inputs, extra_args=["--detection-log", "on"], expect=2 if EXPECTED_REJECTIONS else 0, prefix="decoded-text-")
         cls.addClassCleanup(cls.harness.cleanup)
 
-    def test_two_samples_published_and_the_numeric_date_of_birth_rejected_with_its_reason(self):
+    def test_every_sample_publishes_including_the_numeric_date_of_birth(self):
+        # The names-only file does not map DOB, so the date of birth sent as a JSON number publishes unchanged.
         items = [i for i in self.harness.report["Items"] if "template-" not in i["Source"]]
         published = [i for i in items if i["Status"] == "Published"]
         rejected = {i["Source"].replace("\\", "/").rsplit("/", 1)[-1]: i["Reason"] for i in items if i["Status"] == "Rejected"}
-        self.assertEqual(len(published), 2)
+        self.assertEqual(len(published), 3)
         self.assertEqual(set(rejected), set(EXPECTED_REJECTIONS))
         for name, reason in EXPECTED_REJECTIONS.items():
             self.assertIn(reason, rejected[name])
+        numeric = json.loads(payload(self.harness.published("PNR-Linking", "PNR_LINKING_03_Negative_Testing.txt")))
+        original = json.loads(payload(self.inputs["PNR-Linking/PNR_LINKING_03_Negative_Testing.txt"]))
+        self.assertEqual(numeric[0]["Customers"][0]["DOB"], original[0]["Customers"][0]["DOB"])
+        self.assertTrue(all(set(c["FirstName"]) == {"*"} for c in numeric[0]["Customers"] if c.get("FirstName")))
 
-    def test_published_samples_keep_framing_and_protect_every_baseline_value(self):
+    def test_published_samples_keep_framing_and_protect_every_name_of_the_baseline(self):
         document, exceptions = baseline()
-        totals = {"protected": 0, "approved_exceptions": 0}
+        totals = {"protected": 0, "approved_exceptions": 0, "out_of_scope": 0}
         for key, original in self.inputs.items():
             feed, name = key.split("/")
             if "template-" in name or name in EXPECTED_REJECTIONS:
@@ -55,7 +61,8 @@ class DecodedTextFeedTests(unittest.TestCase):
             counts = verify_published(feed, name, original, self.harness.published(feed, name), document, exceptions)
             for k in totals:
                 totals[k] += counts[k]
-        self.assertEqual(totals["protected"] + totals["approved_exceptions"], len(document["protected"]))
+        self.assertEqual(totals["protected"] + totals["approved_exceptions"], len(in_scope(document)))
+        self.assertEqual(totals["out_of_scope"], len(document["protected"]) - len(in_scope(document)), "every other baseline value is out of scope")
         self.assertEqual(totals["approved_exceptions"], len(exceptions))
 
     def test_template_changes_still_publish_and_leave_an_undetected_new_value_unchanged(self):
@@ -68,7 +75,7 @@ class DecodedTextFeedTests(unittest.TestCase):
         original = dict(json_scalars(json.loads(payload(LINKING.read_bytes()))))
         for name in ("template-removed-key.bin", "template-reordered-keys.bin"):
             output = dict(json_scalars(json.loads(self.harness.published("PNR-Linking", name))))
-            for e in document["protected"]:
+            for e in in_scope(document):
                 if e["sample"] == "PNR_LINKING.txt" and ("PNR_LINKING.txt", e["location"]) not in exceptions:
                     self.assertNotEqual(output[e["location"]], original[e["location"]],
                                         f"{name}: {e['entity']} at {e['location']} was published unprotected")
@@ -87,6 +94,37 @@ class DecodedTextFeedTests(unittest.TestCase):
         self.assertGreater(sum(len(b["entries"]) for b in found), 200)
         leaked = leaked_values("\n".join("\n".join(b["lines"][1:]) for b in found))
         self.assertEqual(leaked, [])
+
+
+class DefaultDetectionHarnessTests(unittest.TestCase):
+    """Presidio:DefaultDetection through the real workers (--default-detection): off acts on the file's definitions only and
+    says so in the run summary, with no predefined or spaCy decision in the detection log; on adds Presidio's own."""
+
+    MESSAGE = b'[{"FirstName":"JORDAN","Note":"mail jordan.miller@example.com"}]'  # made up
+
+    @classmethod
+    def setUpClass(cls):
+        inputs = {"PNR-Linking/flag.bin": cls.MESSAGE}
+        cls.off = run(inputs, extra_args=["--detection-log", "on"], expect=0, prefix="default-detection-off-")
+        cls.addClassCleanup(cls.off.cleanup)
+        cls.on = run(inputs, extra_args=["--detection-log", "on", "--default-detection", "on"], expect=0, prefix="default-detection-on-")
+        cls.addClassCleanup(cls.on.cleanup)
+
+    def test_off_masks_the_mapped_name_only(self):
+        self.assertEqual(self.off.published("PNR-Linking", "flag.bin"), b'[{"FirstName":"******","Note":"mail jordan.miller@example.com"}]')
+
+    def test_on_masks_the_email_address_too(self):
+        self.assertEqual(self.on.published("PNR-Linking", "flag.bin"), b'[{"FirstName":"******","Note":"mail *************************"}]')
+
+    def test_the_run_shows_its_mode_and_off_logs_no_predefined_decision(self):
+        self.assertIn("HARNESS Default detection off:", self.off.console)
+        self.assertIn("HARNESS Default detection on:", self.on.console)
+        self.assertIn("Default detection off:", (self.off.output_root / "detection-summary.txt").read_text(encoding="utf-8"))
+        entries = [line for b in blocks(self.off.console) for _, line in b["entries"]]
+        self.assertEqual(len(entries), 2)
+        self.assertTrue(all(re.search(r" recognizer=(entity_mapping|none) ", line) for line in entries), "only the mapped key decided")
+        self.assertNotIn("spacy-guess", self.off.console)
+        self.assertIn("recognizer=EmailRecognizer", self.on.console)
 
 
 if __name__ == "__main__":

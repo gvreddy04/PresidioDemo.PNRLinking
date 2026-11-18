@@ -1,17 +1,20 @@
-"""Value-free verification of decoded-text protection against the frozen parity baseline (WR-019).
+"""Value-free verification of decoded-text protection against the frozen parity baseline (WR-019), names only.
 
-Shared by test_decoded_text_feeds.py and tests/run_sample_verification.py. Nothing here prints or returns a sample
-value; failures name the sample, location and check only.
+Shared by test_decoded_text_feeds.py and tests/run_sample_verification.py. The recognizer file defines passenger names
+only, so only the baseline's PERSON values are checked; every other baseline value is counted as out of scope and never
+fails a check. Nothing here prints or returns a sample value; failures name the sample, location and check only.
 """
 from pathlib import Path
 import json
 
 PROJECT = Path(__file__).resolve().parents[2]
 FIXTURES = PROJECT / "tests" / "fixtures"
-# A date of birth sent as a JSON number cannot be protected in its JSON type, so the message is dead-lettered (WR-016).
-EXPECTED_REJECTIONS = {
-    "PNR_LINKING_03_Negative_Testing.txt": "number or boolean that cannot be protected in its JSON type",
-}
+# The negative samples that must be dead-lettered, with their reason. None: PNR_LINKING_03 sends a date of birth as a JSON
+# number, which dead-lettered while DOB was a mapped key; the file now maps passenger names only, so it publishes with the
+# number unchanged. A number or boolean under a mapped name key still dead-letters (WR-016); FeedPipelineChecks covers it.
+EXPECTED_REJECTIONS = {}
+# The one baseline entity in scope: the recognizer file defines passenger names only.
+SCOPE_ENTITY = "PERSON"
 
 
 def payload(message):
@@ -25,6 +28,11 @@ def payload(message):
 def header(message):
     """Return the MQ metadata rows of an export."""
     return [line for line in message.decode("utf-8").splitlines() if line.startswith("A ")]
+
+
+def in_scope(document):
+    """Return the baseline values in the names-only scope."""
+    return [entry for entry in document["protected"] if entry["entity"] == SCOPE_ENTITY]
 
 
 def baseline():
@@ -47,11 +55,12 @@ def json_scalars(node, path=""):
 
 
 def verify_published(feed, name, original, output, document=None, exceptions=None):
-    """Check one published sample; return value-free counts, raise AssertionError on a failed check."""
+    """Check one published sample; return value-free counts, raise AssertionError on a failed check. Baseline values
+    outside the names-only scope are counted as out_of_scope and not checked."""
     if document is None:
         document, exceptions = baseline()
     before, after = payload(original), payload(output)
-    checks = {"protected": 0, "approved_exceptions": 0}
+    checks = {"protected": 0, "approved_exceptions": 0, "out_of_scope": 0}
     if original[:2] == b"A ":
         if header(original) != header(output):
             raise AssertionError(f"{name}: MQ metadata changed")
@@ -80,6 +89,9 @@ def verify_published(feed, name, original, output, document=None, exceptions=Non
         raise AssertionError(f"{name}: an ASCII payload changed its length")
     for entry in document["protected"]:
         if entry["sample"] != name:
+            continue
+        if entry["entity"] != SCOPE_ENTITY:
+            checks["out_of_scope"] += 1
             continue
         value, published = left[entry["location"]], right[entry["location"]]
         caught = all(a == "*" or a != b for a, b in zip(value, published))

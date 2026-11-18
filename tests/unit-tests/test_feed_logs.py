@@ -128,8 +128,7 @@ class DetectionLogTests(unittest.TestCase):
 
     def test_every_decoded_string_is_listed_once_in_its_group(self):
         # A message dead-lettered after detection keeps its block with values (WR-020): no recognizer file can force that
-        # rejection, so FeedPipelineChecks covers it with a codec whose rebuild check fails. PNR_LINKING_03 is rejected
-        # before any string is decided, so it has no block.
+        # rejection, so FeedPipelineChecks covers it with a codec whose rebuild check fails.
         expected = sum(int(m.group(1)) for m in re.finditer(r"^SAMPLE \S+ candidates=(\d+)", self.on, re.M))
         found = blocks(self.on)
         self.assertGreater(expected, 0)
@@ -278,7 +277,7 @@ class DetectionLogValuesTests(unittest.TestCase):
 
     def test_messages_rejected_before_detection_write_no_block(self):
         transactions = {b["header"].group(2) for b in blocks(self.values.console)}
-        for name in ("truncated.bin", "PNR_LINKING_03_Negative_Testing.txt"):
+        for name in ("truncated.bin",):
             item = self.values.status("PNR-Linking", name, "Rejected")
             self.assertNotIn(item["MessageId"], transactions, f"PNR-Linking/{name} was rejected before detection but has a block")
 

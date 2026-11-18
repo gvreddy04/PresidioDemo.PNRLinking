@@ -1,8 +1,12 @@
 {
   "parity": "PASS",
+  "defaultDetection": false,
+  "scope": "names-only (PERSON)",
   "protected": {
     "baseline": 14,
-    "caught": 14,
+    "inScope": 6,
+    "outOfScope": 8,
+    "caught": 6,
     "missed": 0,
     "approvedExceptions": 0,
     "unapproved": 0
@@ -19,30 +23,25 @@
     },
     {
       "sample": "PNR_LINKING_03_Negative_Testing.txt",
-      "status": "rejected",
-      "reason": "A personal-data property holds a number or boolean that cannot be protected in its JSON type; input retained and no output was published."
+      "status": "published",
+      "reason": ""
     }
   ],
   "misses": [],
   "throughput": {
     "rounds": 20,
     "messages": 20,
-    "nlpNer": "on (spaCy en_core_web_lg)",
-    "messagesPerSecondPerTask": 145.9,
+    "nlpNer": "off (Presidio:DefaultDetection false; no custom recognizer has context words, so spaCy does not run)",
+    "messagesPerSecondPerTask": 628.4,
     "feeds": [
       {
         "feed": "PNR-Linking",
-        "messagesPerSecondPerTask": 146.7,
-        "tasks": 3
+        "messagesPerSecondPerTask": 643.2,
+        "tasks": 1
       }
     ],
-    "tasksForPeak": 3,
+    "tasksForPeak": 1,
     "assumption": "400 msg/s peak for the PNR-Linking feed; one worker process per ECS task"
   },
-  "rejected": [
-    {
-      "sample": "PNR_LINKING_03_Negative_Testing.txt",
-      "reason": "A personal-data property holds a number or boolean that cannot be protected in its JSON type; input retained and no output was published."
-    }
-  ]
+  "rejected": []
 }
