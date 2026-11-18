@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
 <title id="title">PNR-Linking masking with retry and dead letter queue</title>
-<desc id="desc">The PNR-Linking worker in the DemoAir PII service AWS account reads one message from the PNR-Linking input queue (local route q.pnr-linking.raw), parses its UTF-8 JSON array, masks PII in its JSON strings with Presidio in the same process, publishes the masked message to the protected topic (local route airline/pnr-linking/protected) and acknowledges the input only after the broker confirms. Record locators stay unchanged. Bad data, such as a passenger name sent as a JSON number, goes to the PNR-Linking dead letter queue (local route q.pnr-linking.dlq) at once. A broker outage is retried every 5 seconds without acknowledging. A crash before the ack makes the broker redeliver. After 5 deliveries the worker moves the message to the DLQ, and the broker does so after 10 as a backstop.</desc>
+<desc id="desc">The PNR-Linking worker in the DemoAir PII service AWS account reads one message from the PNR-Linking input queue (local route q.pnr-linking.raw), parses its UTF-8 JSON array, masks passenger names in its JSON strings with Presidio in the same process, publishes the masked message to the protected topic (local route airline/pnr-linking/protected) and acknowledges the input only after the broker confirms. Record locators stay unchanged, and so do other fields, such as emails and tickets, while Presidio:DefaultDetection is off. Bad data, such as a passenger name sent as a JSON number, goes to the PNR-Linking dead letter queue (local route q.pnr-linking.dlq) at once. A broker outage is retried every 5 seconds without acknowledging. A crash before the ack makes the broker redeliver. After 5 deliveries the worker moves the message to the DLQ, and the broker does so after 10 as a backstop.</desc>
 <defs>
 <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9z" fill="#444441"/></marker>
 <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9z" fill="#A32D2D"/></marker>
@@ -68,7 +68,7 @@ text{font-family:'Segoe UI',Arial,sans-serif;fill:#2C2C2A}
 <text class="t" x="517" y="264" text-anchor="middle">Receive</text>
 <text class="m" x="517" y="286" text-anchor="middle">one message at a time</text></g>
 <g class="st"><rect x="625" y="230" width="175" height="80" rx="6"/>
-<text class="t" x="712" y="264" text-anchor="middle">Mask PII</text>
+<text class="t" x="712" y="264" text-anchor="middle">Mask passenger names</text>
 <text class="m" x="712" y="286" text-anchor="middle">JSON strings · Presidio</text></g>
 <g class="st"><rect x="820" y="230" width="175" height="80" rx="6"/>
 <text class="t" x="907" y="264" text-anchor="middle">Publish masked</text>
@@ -120,7 +120,7 @@ text{font-family:'Segoe UI',Arial,sans-serif;fill:#2C2C2A}
 <!-- Output side -->
 <g class="cq"><rect x="1290" y="145" width="280" height="130" rx="8"/>
 <use href="#q" x="1304" y="160" width="20" height="14"/>
-<text class="t" x="1332" y="172">PNR-Linking (PII &amp; PCI clean)</text>
+<text class="t" x="1332" y="172">PNR-Linking (names masked)</text>
 <text class="m" x="1304" y="194">Topic airline/pnr-linking/protected</text>
 <text class="d" x="1304" y="218">"PNROwner" unchanged</text>
 <text class="d" x="1304" y="238">FirstName, LastName masked</text></g>

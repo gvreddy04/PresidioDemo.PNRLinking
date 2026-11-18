@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1040" viewBox="0 0 1800 1040" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1082" viewBox="0 0 1800 1082" role="img" aria-labelledby="title desc">
   <title id="title">PII infrastructure on AWS</title>
-  <desc id="desc">Proposed development infrastructure in a private AWS VPC for the PNR-Linking feed, drawn as one lane. PNR-Linking producers publish to the exclusive raw PNR-Linking queue on one Solace broker. One PNR-Linking listener task on ECS Fargate reads the queue one message at a time in arrival order. The listener parses the UTF-8 JSON array message with the shared System.Text.Json parser, protects PII in its JSON strings, writes it back with every byte outside the changed characters unchanged, validates the output and publishes it to the protected PNR-Linking topic, which consumers read through a subscribed queue. PII is protected with .NET and local Presidio embedded through Python.NET (pythonnet, presidio-analyzer, presidio-anonymizer, en_core_web_lg) using the pnr-linking.xml recognizer file; record locators stay unchanged. The listener connects with a native client; there are no HTTP or remote PII calls. Input is acknowledged only after the protected publish succeeds; messages not acknowledged after retries move to the PNR-Linking dead-message queue, which quarantines raw PII with no consumer access. The replay owner for quarantined messages is to be confirmed. Broker ACLs let the listener read the raw queue and consumers read the protected topic only. The broker is one EC2 instance in a single Availability Zone with an EBS volume and no high availability in dev, to be confirmed. VPC endpoints carry platform traffic to Amazon ECR, S3, CloudWatch Logs and Secrets Manager, outside the PII path. The producer and consumer connection type is to be confirmed. Broker connections use TLS and the broker EBS volume is KMS encrypted. Protection is irreversible masking at the same width, and delivery is at least once, so consumers may see duplicates. The Presidio model is bundled with no runtime download. To be confirmed: no internet egress from the VPC, broker admin through SSM only, ECR image scanning, broker credentials in Secrets Manager, CloudWatch alarms on queue and dead-message depth, no PII in logs, and the dead-message retry count, retention and replay owner.</desc>
+  <desc id="desc">Proposed development infrastructure in a private AWS VPC for the PNR-Linking feed, drawn as one lane. PNR-Linking producers publish to the exclusive raw PNR-Linking queue on one Solace broker. One PNR-Linking listener task on ECS Fargate reads the queue one message at a time in arrival order. The listener parses the UTF-8 JSON array message with the shared System.Text.Json parser, protects passenger names in its JSON strings, writes it back with every byte outside the changed characters unchanged, validates the output and publishes it to the protected PNR-Linking topic, which consumers read through a subscribed queue. Passenger names are protected with .NET and local Presidio embedded through Python.NET (pythonnet, presidio-analyzer, presidio-anonymizer, en_core_web_lg) using the pnr-linking.xml recognizer file; record locators and other fields stay unchanged. Presidio's predefined recognizers, such as email, phone and spaCy name detection, act only with Presidio:DefaultDetection on, which is off by default, so emails, phone numbers, tickets, IDs and loyalty numbers are published unchanged. The listener connects with a native client; there are no HTTP or remote PII calls. Input is acknowledged only after the protected publish succeeds; messages not acknowledged after retries move to the PNR-Linking dead-message queue, which quarantines raw PII with no consumer access. The replay owner for quarantined messages is to be confirmed. Broker ACLs let the listener read the raw queue and consumers read the protected topic only. The broker is one EC2 instance in a single Availability Zone with an EBS volume and no high availability in dev, to be confirmed. VPC endpoints carry platform traffic to Amazon ECR, S3, CloudWatch Logs and Secrets Manager, outside the PII path. The producer and consumer connection type is to be confirmed. Broker connections use TLS and the broker EBS volume is KMS encrypted. Protection is irreversible masking at the same width, and delivery is at least once, so consumers may see duplicates. The Presidio model is bundled with no runtime download. To be confirmed: no internet egress from the VPC, broker admin through SSM only, ECR image scanning, broker credentials in Secrets Manager, CloudWatch alarms on queue and dead-message depth, no PII in logs, and the dead-message retry count, retention and replay owner.</desc>
   <metadata>Project evidence: PresidioDemo.slnx; src/PresidioDemo.Worker/Program.cs; src/PresidioDemo.Worker/appsettings.json; src/PresidioDemo.Worker/Pipeline/FeedWorker.cs; src/PresidioDemo.Core/Decoder/JsonFeedParser.cs; src/PresidioDemo.Core/Decoder/PnrLinkingParser.cs; src/PresidioDemo.Core/Protection/DetectingFeedProtector.cs; src/PresidioDemo.Core/Protection/python/presidio_demo.py; src/PresidioDemo.Core/Configuration/recognizers/pnr-linking.xml; src/PresidioDemo.Messaging.Solace/SolaceMessaging.cs. Current source runs one Solace consumer for the PNR-Linking feed (local route q.pnr-linking.raw; Dev route DEMOAIR.OPS.PIIDEMO.COS.PNRLINK.MI.1), validates output before publishing it to the protected topic, acknowledges the input only after the broker confirms, and sends rejected input to the restricted dead-letter queue; the exclusive queue, the dead-message queue, broker ACLs and AWS deployment are proposed. No external documents used as evidence.</metadata>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke="#3e556b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
@@ -18,7 +18,7 @@
       .external{fill:white;stroke:#61778d;stroke-width:2;stroke-dasharray:9 6}
     </style>
   </defs>
-  <rect width="1800" height="1040" fill="#ffffff"/>
+  <rect width="1800" height="1082" fill="#ffffff"/>
   <text x="900" y="62" class="title">PII infrastructure on AWS</text>
   <text x="900" y="100" class="note muted">Proposed dev · PNR-Linking feed · one queue and one listener</text>
 
@@ -112,18 +112,18 @@
   <text x="1396" y="810" class="tiny muted">Broker creds · to confirm</text>
 
   <!-- Legend -->
-  <rect x="240" y="900" width="1320" height="120" rx="16" fill="#ffffff" stroke="#d3dce5" stroke-width="1.5"/>
+  <rect x="240" y="900" width="1320" height="162" rx="16" fill="#ffffff" stroke="#d3dce5" stroke-width="1.5"/>
   <text x="265" y="930" class="small start" style="font-weight:bold">Legend</text>
   <rect x="265" y="948" width="40" height="22" rx="5" class="raw"/>
   <text x="317" y="965" class="small start">Raw · original PII</text>
-  <rect x="705" y="948" width="40" height="22" rx="5" class="protected"/>
-  <text x="757" y="965" class="small start">Protected · record locators kept · irreversible</text>
-  <rect x="1175" y="948" width="40" height="22" rx="5" class="dead"/>
-  <text x="1227" y="965" class="small start">Failed after retries · no consumers</text>
-  <path d="M265 1001H301" class="connection"/>
-  <text x="317" y="1007" class="small start">Native client · TLS · no HTTP</text>
-  <path d="M705 1001H741" class="platform"/>
-  <text x="757" y="1007" class="small start">Platform traffic · not PII</text>
-  <rect x="1175" y="992" width="40" height="22" rx="5" class="external" style="stroke-dasharray:6 4"/>
-  <text x="1227" y="1008" class="small start">Outside AWS</text>
+  <rect x="265" y="990" width="40" height="22" rx="5" class="protected"/>
+  <text x="317" y="1007" class="small start">Protected · passenger names masked · other fields unchanged · record locators kept · irreversible</text>
+  <rect x="705" y="948" width="40" height="22" rx="5" class="dead"/>
+  <text x="757" y="965" class="small start">Failed after retries · no consumers</text>
+  <path d="M265 1043H301" class="connection"/>
+  <text x="317" y="1049" class="small start">Native client · TLS · no HTTP</text>
+  <path d="M705 1043H741" class="platform"/>
+  <text x="757" y="1049" class="small start">Platform traffic · not PII</text>
+  <rect x="1175" y="948" width="40" height="22" rx="5" class="external" style="stroke-dasharray:6 4"/>
+  <text x="1227" y="965" class="small start">Outside AWS</text>
 </svg>

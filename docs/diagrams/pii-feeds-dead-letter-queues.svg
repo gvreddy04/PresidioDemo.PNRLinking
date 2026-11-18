@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1880 754" role="img" aria-labelledby="title desc">
 <title id="title">PNR-Linking feed with its dead letter queue</title>
-<desc id="desc">The DemoAir reservation host sends the PNR-Linking feed, UTF-8 JSON with an array root, through Solace micro-integrations to the integration Solace broker. The PNR-Linking input queue sits in the restricted PII box with its own PNR-Linking dead letter queue on the same broker. The PII service AWS account runs one ECS worker service for the PNR-Linking feed, with Presidio in-process masking PII in the JSON strings, and publishes masked messages to the PNR-Linking PII clean queue, which the partner core system consumes. Detection handles about 628 messages per second per task; with the broker round trips, about 3 tasks cover an assumed 400 messages per second peak.</desc>
+<desc id="desc">The DemoAir reservation host sends the PNR-Linking feed, UTF-8 JSON with an array root, through Solace micro-integrations to the integration Solace broker. The PNR-Linking input queue sits in the restricted PII box with its own PNR-Linking dead letter queue on the same broker. The PII service AWS account runs one ECS worker service for the PNR-Linking feed, with Presidio in-process masking passenger names in the JSON strings, and publishes masked messages to the PNR-Linking names-masked queue, which the partner core system consumes. Detection handles about 628 messages per second per task; with the broker round trips, about 3 tasks cover an assumed 400 messages per second peak.</desc>
 <defs>
 <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9z" fill="#444441"/></marker>
 <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9z" fill="#A32D2D"/></marker>
@@ -47,8 +47,8 @@ text{font-family:'Segoe UI',Arial,sans-serif;fill:#2C2C2A}
 <path class="dl" d="M605 220V248H708" marker-end="url(#r)"/>
 
 <rect x="1170" y="130" width="280" height="160" rx="12" fill="#EEF6E8" stroke="#3B6D11" stroke-width="1.5"/>
-<text class="h" x="1186" y="156" style="fill:#3B6D11">PII clean</text>
-<g class="cq"><rect x="1190" y="180" width="240" height="40" rx="6"/><use href="#q" x="1200" y="193" width="20" height="14"/><text class="s" x="1228" y="205">PNR-Linking (PII &amp; PCI clean)</text></g>
+<text class="h" x="1186" y="156" style="fill:#3B6D11">Names masked</text>
+<g class="cq"><rect x="1190" y="180" width="240" height="40" rx="6"/><use href="#q" x="1200" y="193" width="20" height="14"/><text class="s" x="1228" y="205">PNR-Linking (names masked)</text></g>
 
 <path class="ln" d="M410 378H440V200H518" marker-end="url(#a)"/>
 <path class="ln" d="M720 200H940V378" marker-end="url(#a)"/>
@@ -59,7 +59,7 @@ text{font-family:'Segoe UI',Arial,sans-serif;fill:#2C2C2A}
 <rect x="480" y="340" width="990" height="184" rx="12" fill="#FAEEDA" stroke="#BA7517" stroke-width="1.5"/>
 <text class="h" x="496" y="366">PII service AWS account · ECS Fargate</text>
 <g class="wk"><rect x="890" y="380" width="320" height="56" rx="6"/><text class="t" x="1050" y="402" text-anchor="middle">PNR-Linking worker</text><text class="m" x="1050" y="422" text-anchor="middle">.NET + Presidio · JSON array</text></g>
-<text class="s" x="509" y="470">One service for the PNR-Linking feed: reads the PII queue, masks the JSON strings, publishes to the clean queue, then acks.</text>
+<text class="s" x="509" y="470">One service for the PNR-Linking feed: reads the PII queue, masks passenger names in the JSON strings, publishes to the masked queue, then acks.</text>
 <text class="s" x="509" y="494">Presidio runs inside the worker through Python.NET. No HTTP calls. About 628 msg/s per task for detection; about 3 tasks for an assumed 400 msg/s peak.</text>
 
 <rect x="1530" y="80" width="320" height="230" rx="12" fill="#EEF6E8" stroke="#3B6D11" stroke-width="1.5"/>
@@ -77,7 +77,7 @@ text{font-family:'Segoe UI',Arial,sans-serif;fill:#2C2C2A}
 <text class="s" x="508" y="628">The DLQ sits beside the PNR-Linking input queue. If the</text>
 <text class="s" x="508" y="648">queue moves to another broker, its DLQ moves with it.</text>
 <rect x="950" y="574" width="440" height="112" rx="10" fill="#FAEEDA" stroke="#BA7517"/>
-<text class="t" x="968" y="602">Ack only after the clean publish</text>
+<text class="t" x="968" y="602">Ack only after the masked publish</text>
 <text class="s" x="968" y="628">Bad input goes to the DLQ at once. A crash means no ack:</text>
 <text class="s" x="968" y="648">after 5 deliveries the worker moves it to the DLQ,</text>
 <text class="s" x="968" y="668">and the broker does so after 10 as a backstop.</text>
