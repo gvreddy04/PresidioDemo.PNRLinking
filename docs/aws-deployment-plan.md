@@ -4,9 +4,7 @@ Diagram: [aws-solace-ecs-deployment.svg](diagrams/aws-solace-ecs-deployment.svg)
 
 This worker runs the PNR-Linking feed only, so this plan covers one feed service.
 
-Decoded-text detection is an initial POC: deploy it to Dev only, through the image built from the reviewed pull request. QA and production wait until a later change approves it (PR-005); for PNR-Linking, [tests/fixtures/parity-exceptions.json](../tests/fixtures/parity-exceptions.json) lists no miss.
-
-**Not yet routable in Dev.** No Dev input queue, output topic or dead letter queue has been named for PNR-Linking, so `appsettings.json` has no Dev route. The task definition must supply route 0 (`Messaging__Routes__0__Feed=PNR-Linking` and its `Input`, `Output` and `DeadLetter`) once the broker team has created the destinations below; until then the worker stops at startup with a message naming `Messaging:Routes`.
+Decoded-text detection is an initial POC: deploy it to Dev only, through the image built from the reviewed pull request. QA and production wait until a later change approves it (PR-005); for PNR-Linking, [tests/fixtures/parity-exceptions.json](../tests/fixtures/parity-exceptions.json) lists no miss. The recognizer file protects passenger names only, and `Presidio:DefaultDetection` is off in `appsettings.json`, so only the file's definitions act; set `Presidio__DefaultDetection=true` in a task definition to run Presidio's predefined recognizers as well (a reviewed task-definition deploy, like the other `Presidio` settings).
 
 ## How it works
 
@@ -22,7 +20,7 @@ The Existing? column records what we assume; confirm each row with the platform 
 |---|---|---|---|
 | 1 | ECR repository | `presidio-worker`, scan on push, immutable tags; image about 1.8 GB, linux/amd64 | New |
 | 2 | ECS cluster | Fargate capacity | Reuse if one exists |
-| 3 | ECS task definition, 1 | `presidio-worker-pnr-linking-dev`; 1 vCPU, 4 GB; `stopTimeout` 40 s; `DOTNET_ENVIRONMENT=Dev`; `Messaging__Feed=PNR-Linking` and the PNR-Linking route (route 0, all four values, because `appsettings.json` has no Dev route); `Solace__*` environment variables; `secrets` entry for `SOLACE_PASSWORD`; `awslogs` driver with `awslogs-multiline-pattern` set to `^\S`, so each detection block (one header line, then indented lines) arrives as one log event; every other worker line starts in the first column | New (Harness registers it) |
+| 3 | ECS task definition, 1 | `presidio-worker-pnr-linking-dev`; 1 vCPU, 4 GB; `stopTimeout` 40 s; `DOTNET_ENVIRONMENT=Dev`; `Messaging__Feed=PNR-Linking` and the PNR-Linking route (route 0); `Solace__*` environment variables; `secrets` entry for `SOLACE_PASSWORD`; `awslogs` driver with `awslogs-multiline-pattern` set to `^\S`, so each detection block (one header line, then indented lines) arrives as one log event; every other worker line starts in the first column | New (Harness registers it) |
 | 4 | ECS service, 1 | The PNR-Linking service; min 1 task; no load balancer; rolling deploy | New |
 | 4a | Service auto scaling, 1 | Min sized for the normal peak; scheduled actions raise it before holidays; CPU target tracking at 60 % with parallel consumers; max = the PNR-Linking queue's partition count | New |
 | 5 | Task execution role | `ecr:GetAuthorizationToken` and image pull; `logs:CreateLogStream` and `PutLogEvents`; `secretsmanager:GetSecretValue` on the one secret; `kms:Decrypt` if a customer-managed key is used | New |
@@ -47,7 +45,7 @@ The Existing? column records what we assume; confirm each row with the platform 
 - **Numbers:** 8 consumers per task and 32 partitions, so at most 4 tasks for the PNR-Linking feed. If the feed needs more tasks, raise its partitions; no code change is needed.
 - **Start tasks before they're needed.** The service's minimum is sized for the normal peak (one task). Scheduled scaling raises the minimum before holidays, so slow task start-up rarely matters. CPU target tracking at 60 % handles the rest, up to the partition count.
 
-**What one message costs:** decoded-text detection runs local Presidio on every JSON string it does not decide by key, with spaCy NER on. In the detection spike (the production PNR-Linking sample, 20 rounds, one process, no broker) one task handled about 146 PNR-Linking messages per second with every Presidio predefined recognizer on; runs on one workstation vary, so treat this as an estimate. PNR-Linking messages are quick to detect: of the 56 strings in the sample, the key mappings and skipped keys decide 54, so Presidio analyzes only 2. A message with more free text costs more. Presidio calls are serialized inside a task, so extra consumers per task overlap broker round trips but do not add detection throughput; scale with tasks. At about 146 per second, 400 per second needs about 3 tasks, within the 4 tasks that 32 partitions and 8 consumers per task allow above. Confirm the real PNR-Linking peak before sizing. The figures come from `dotnet run --project tests/DetectionParityChecks -- spike` and are recorded in [tests/fixtures/spike-summary.json](../tests/fixtures/spike-summary.json). In production, the round trip to the broker adds to this.
+**What one message costs:** decoded-text detection runs local Presidio on every JSON string it does not decide by key or allow list. With `Presidio:DefaultDetection` off, as shipped, Presidio runs only the file's custom recognizer, `passengerName`, which has no context words, so spaCy does not run at all. In the detection spike (the production PNR-Linking sample, 20 rounds, one process, no broker) one task handled about 628 PNR-Linking messages per second in that mode; the previous spike, with every Presidio predefined recognizer and spaCy NER on and the earlier file, handled about 146 (133 on the workstation that measured 628). Runs on one workstation vary, so treat these as estimates. Of the 56 strings in the sample, the name keys, skipped keys and allow list decide 48, so Presidio analyzes 8 (the earlier file decided 54). A message with more free text costs more, a custom recognizer with context words makes spaCy run (without NER), and `Presidio__DefaultDetection=true` runs spaCy NER and every predefined recognizer again, back to about the earlier rate. Presidio calls are serialized inside a task, so extra consumers per task overlap broker round trips but do not add detection throughput; scale with tasks. At about 628 per second, detection alone handles 400 per second in 1 task; the broker round trips below still put the count at about 3 tasks, within the 4 tasks that 32 partitions and 8 consumers per task allow above. Confirm the real PNR-Linking peak before sizing. The figures come from `dotnet run --project tests/DetectionParityChecks -- spike` and are recorded in [tests/fixtures/spike-summary.json](../tests/fixtures/spike-summary.json). In production, the round trip to the broker adds to this.
 
 The task counts and costs below were first sized for 2,000 messages per second; the figures here are one fifth of those, for the 400 per second PNR-Linking target, and do not include detection.
 
@@ -64,14 +62,14 @@ The task counts and costs below were first sized for 2,000 messages per second; 
 Limits to confirm before requesting infrastructure:
 
 - **Broker:** about 400 persistent messages per second in and the same out; one connection per task, and one flow per consumer on top; enough partitions for the service's maximum number of consumers.
-- **AWS:** a Fargate quota for the PNR-Linking task count above plus rolling deploys (about 3 tasks at the spike rate, so about 6 vCPU with a rolling deploy); about 20 free IP addresses in the subnets.
+- **AWS:** a Fargate quota for the PNR-Linking task count above plus rolling deploys (about 3 tasks at the broker-bound rate above, so about 6 vCPU with a rolling deploy); about 20 free IP addresses in the subnets.
 - **Start-up time:** a new task pulls a 1.8 GB image and loads the spaCy model before it takes messages. Keep the service's minimum task count sized for the normal peak, and use scheduled scaling before holidays.
 
 Not measured yet: CPU per message on Fargate, real message sizes, and task start-up time. A load test in Dev should set the final task counts.
 
 ## Solace configuration
 
-Configured in `appsettings.json` (`Environments:Dev`): host `tcps://…:55443`, VPN, username, client name and the password variable name. No PNR-Linking route is configured yet, because no Dev destination has been named; route 0 is supplied as environment variables at deploy time, with the other real values.
+Configured in `appsettings.json` (`Environments:Dev`): host `tcps://…:55443`, VPN, username, client name and the password variable name. The PNR-Linking route is configured, as route 0, with DemoAir stand-in names in the PNR worker's convention: input `DEMOAIR.OPS.PIIDEMO.COS.PNRLINK.MI.1`, topic `demoair/ops/piidemo/pnrlink/protected`, dead letter queue `DEMOAIR.OPS.PIIDEMO.COS.PNRLINK.DLQ.1`. Real values are applied as environment variables at deploy time.
 
 Confirmed:
 
@@ -81,7 +79,7 @@ Confirmed:
 
 Still needed from the broker owner:
 
-- The names of the PNR-Linking input queue, protected topic and dead letter queue; none is named yet.
+- The real names of the PNR-Linking input queue, protected topic and dead letter queue, to replace the stand-ins at deploy time.
 - A partitioned PNR-Linking input queue, 32 partitions, keyed by the owning record locator. The publishers must set the key: the micro-integration must read `PNROwner` from the JSON, or receive it in an MQ header; confirm it can.
 - For the protected PNR-Linking topic: an output queue and its topic subscription, consumed by the partner core system. The partner should confirm it can take the PNR-Linking peak, and whether it needs the order kept for each booking. The order is kept for now as the safe default.
 - The PNR-Linking dead letter queue, created by the broker team with the same access limits as its input queue, because it holds raw PII.
@@ -94,7 +92,7 @@ Still needed from the broker owner:
 
 - **One feed per task:** set `Messaging__Feed=PNR-Linking` in the task definition. The process then consumes only the PNR-Linking route. When it is empty, the process runs every routed feed, which for this worker is also only PNR-Linking.
 - **Unique client name per task:** `Solace:UniqueClientName` is on in `Dev`. It appends the host name and a random part to `Solace:ClientName`, so scaled-out tasks don't disconnect each other. The host name on Fargate is the task's private address, so the name is traceable without the ECS metadata endpoint, which is an HTTP call.
-- **Routes:** the PNR-Linking route is route 0 (`Messaging__Routes__0__Feed`, `…Input`, `…Output`, `…DeadLetter`), all four set in the task definition. A task definition written for another worker, such as the PNR worker, names another feed and stops startup with a message naming the route index and the feed; rewrite it before deploying this image.
+- **Routes:** the PNR-Linking route is route 0 (`Messaging__Routes__0__Input`, `…Output`, `…DeadLetter`). A task definition written for another worker, such as the PNR worker, names another feed and stops startup with a message naming the route index and the feed; rewrite it before deploying this image.
 
 ## Solace password from Secrets Manager
 

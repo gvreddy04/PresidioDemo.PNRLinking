@@ -108,7 +108,7 @@ The sender connects as `presidio-worker-local-sender`, so it does not disconnect
 docker logs presidio-worker-local
 ```
 
-Expect 2 `PUBLISHED` lines (`PNR_LINKING.txt` and `PNR_LINKING_02_Negative_Testing.txt`) and 1 `DEAD-LETTERED` line (`PNR_LINKING_03_Negative_Testing.txt`, a date of birth sent as a JSON number). (This container run has not been repeated for this worker; the test harness gives the same result.) To inspect protected messages, open PubSub+ Manager at http://localhost:8080 (user `admin`) and create a queue subscribed to `airline/>` before sending the samples; a topic keeps nothing without a subscriber.
+Expect 3 `PUBLISHED` lines and no `DEAD-LETTERED` line: `PNR_LINKING_03_Negative_Testing.txt` sends a date of birth as a JSON number, which the names-only recognizer file does not map, so it is published too. (This container run has not been repeated for this worker; the test harness gives the same result.) To inspect protected messages, open PubSub+ Manager at http://localhost:8080 (user `admin`) and create a queue subscribed to `airline/>` before sending the samples; a topic keeps nothing without a subscriber.
 
 ### Step 7: Stop when you are done
 
@@ -140,7 +140,7 @@ In `deploy\.env.dev`, replace the DemoAir stand-ins with the real Dev values:
 
 - `SOLACE_PASSWORD`, `Solace__Host`, `Solace__Vpn` and `Solace__Username`.
 - `Solace__ClientName`: a name of your own. The broker disconnects an existing connection that uses the same client name.
-- The input queue, output topic and dead-letter queue of the PNR-Linking route, which is route 0 (`Messaging__Routes__0__…`). The Dev section of `appsettings.json` has no PNR-Linking route, because no Dev destination has been named yet, so the template leaves these empty and the worker stops at startup until all of them are set. Settings that still name another feed stop startup with a message naming the route index and the feed.
+- The input queue, output topic and dead-letter queue of the PNR-Linking route, which is route 0 (`Messaging__Routes__0__…`). Settings that still name another feed stop startup with a message naming the route index and the feed.
 
 `deploy\.env.dev` is git-ignored. Never commit it, and never copy real values into a committed file.
 

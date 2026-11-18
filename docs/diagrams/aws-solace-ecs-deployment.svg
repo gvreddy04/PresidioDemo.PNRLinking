@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1660 686" role="img" aria-labelledby="title desc">
 <title id="title">Processing PII with Presidio: AWS deployment</title>
-<desc id="desc">Harness builds one Docker image for the PNR-Linking worker, pushes it to ECR and deploys it as one ECS service. The PNR-Linking worker reads the PNR-Linking Solace input queue over a native TLS connection with parallel consumers, parses the UTF-8 JSON array message, masks PII in its JSON strings with Presidio in the same process, and publishes masked messages to the PNR-Linking topic, whose output queue serves downstream consumers. Failed messages go to the restricted PNR-Linking dead letter queue, with a broker backstop. The Dev route is set in deploy/.env.dev and its queue and topic are not yet named. The service scales automatically; at about 146 messages per second per task, 3 tasks cover an assumed 400 messages per second peak.</desc>
+<desc id="desc">Harness builds one Docker image for the PNR-Linking worker, pushes it to ECR and deploys it as one ECS service. The PNR-Linking worker reads the PNR-Linking Solace input queue over a native TLS connection with parallel consumers, parses the UTF-8 JSON array message, masks PII in its JSON strings with Presidio in the same process, and publishes masked messages to the PNR-Linking topic, whose output queue serves downstream consumers. Failed messages go to the restricted PNR-Linking dead letter queue, with a broker backstop. The Dev route uses DemoAir stand-in names, replaced at deploy time. The service scales automatically; detection handles about 628 messages per second per task, and with the broker round trips about 3 tasks cover an assumed 400 messages per second peak.</desc>
 <defs>
 <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9z" fill="#444441"/></marker>
 <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9z" fill="#A32D2D"/></marker>
@@ -61,7 +61,7 @@ text{font-family:'Segoe UI',Arial,sans-serif;fill:#2C2C2A}
 <text class="h" x="84" y="216">Solace broker · Dev · AWS</text>
 <text class="m" x="56" y="238">Native client · TLS</text>
 <text class="m" x="56" y="258">Raw PII · restricted access</text>
-<text class="m" x="56" y="278">Dev route: set in deploy/.env.dev (not yet named)</text>
+<text class="m" x="56" y="278">Dev route: DemoAir stand-ins in appsettings.json</text>
 
 <!-- AWS -->
 <rect x="520" y="190" width="600" height="292" rx="12" fill="#FAFAF7" stroke="#5F5E5A" stroke-width="1.5"/>
@@ -82,7 +82,7 @@ text{font-family:'Segoe UI',Arial,sans-serif;fill:#2C2C2A}
 <use href="#q" x="1176" y="203" width="20" height="14" style="color:#BA7517"/>
 <text class="h" x="1204" y="216">Solace broker · Dev · AWS</text>
 <text class="m" x="1176" y="238">Masked output</text>
-<text class="m" x="1176" y="258">Dev topic: not yet named</text>
+<text class="m" x="1176" y="258">Dev topic: …/pnrlink/protected</text>
 
 <!-- Consumers -->
 <rect x="1530" y="332" width="100" height="94" rx="10" fill="#EEF6E8" stroke="#3B6D11"/>
@@ -128,7 +128,7 @@ text{font-family:'Segoe UI',Arial,sans-serif;fill:#2C2C2A}
 <text class="t" x="40" y="568">How it scales</text>
 <text class="s" x="40" y="592">One service: the PNR-Linking worker.</text>
 <text class="s" x="40" y="614">Parallel consumers in each task.</text>
-<text class="s" x="40" y="636">About 146 msg/s per task (measured).</text>
+<text class="s" x="40" y="636">About 628 msg/s per task for detection (measured).</text>
 <text class="s" x="40" y="658">3 tasks for an assumed 400 msg/s peak.</text>
 
 <text class="t" x="440" y="568">Dead letters</text>

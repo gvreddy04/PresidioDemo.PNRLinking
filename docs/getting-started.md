@@ -204,13 +204,13 @@ if ($failed.Count -eq 0) { Write-Host "All .NET checks passed." -ForegroundColor
 **You should see:** `All .NET checks passed.` `Messaging.ContractTests` prints `SKIP Solace contract ...` here; it
 runs against the broker in step 20.
 
-**Python unit tests** (38 tests, about 1–2 minutes; they load Presidio):
+**Python unit tests** (54 tests, about 1–2 minutes; they load Presidio):
 
 ```powershell
 src\.venv\Scripts\python -m unittest discover -s tests/unit-tests
 ```
 
-**You should see:** `Ran 45 tests` and `OK`.
+**You should see:** `Ran 54 tests` and `OK`.
 
 **End-to-end sample check.** This sends the three files in `docs/sample-docs/PNR-Linking` through the real feed
 worker and embedded Presidio, over the in-memory broker:
@@ -219,8 +219,10 @@ worker and embedded Presidio, over the in-memory broker:
 src\.venv\Scripts\python tests/run_sample_verification.py
 ```
 
-**You should see:** `"Published": 2`, `"Rejected": 1` and `"all_checks_passed": true`. The rejected file is
-`PNR_LINKING_03_Negative_Testing.txt` (a date of birth sent as a JSON number), dead-lettered by design.
+**You should see:** `"Published": 3`, `"protected": 6`, `"out_of_scope": 8` and `"all_checks_passed": true`. The
+check is names-only: the 6 passenger names of the frozen baseline must be masked, and its 8 other values (dates of birth
+and IDs) are reported as out of scope. `PNR_LINKING_03_Negative_Testing.txt` sends a date of birth as a JSON number; the
+recognizer file maps passenger names only, so it is published with the number unchanged.
 
 Test output goes to `.test-runs\` (git-ignored). Some files there contain the original, unprotected sample data;
 never copy them elsewhere.
@@ -323,10 +325,11 @@ dotnet run --project src/PresidioDemo.Worker
 **You should see**, within about 10 seconds:
 
 ```
-PRESIDIO FEED WORKER | environment Local | Ctrl+C or SIGTERM stops after the current messages.
+PRESIDIO FEED WORKER | environment Local | default detection off | Ctrl+C or SIGTERM stops after the current messages.
 info: ...SolaceConnection[0] Provisioned 2 Solace queues on the local broker.
 info: ...SolaceConnection[0] Connected to Solace tcp://localhost:55555 (VPN default) as presidio-worker-local.
 info: ...FeedWorkerService[0] Initializing embedded local Presidio and the bundled NLP model...
+info: ...FeedWorkerService[0] Default detection off: only the recognizer files' custom recognizers and mapped keys act; Presidio's predefined recognizers and spaCy NER do not run.
 info: ...Worker.PNR-Linking[0] PNR-Linking worker reading q.pnr-linking.raw; output airline/pnr-linking/protected; dead letter q.pnr-linking.dlq.
 info: ...FeedWorkerService[0] READY: 1 feed workers on Solace.
 ```
@@ -411,8 +414,10 @@ dotnet run --project tools/FeedSampleSender -- --input docs/sample-docs/PNR-Link
 
 ```
 info: ...Worker.PNR-Linking[0] PNR-Linking 6cf9...9106 PUBLISHED to topic:airline/pnr-linking/protected | ... bytes | ... fields protected | delivery 1 | ... ms
-warn: ...Worker.PNR-Linking[0] PNR-Linking 2a41...7c03 DEAD-LETTERED to queue:q.pnr-linking.dlq | A personal-data property holds a number or boolean that cannot be protected in its JSON type; input retained and no output was published. | delivery 1 | ... ms
 ```
+
+A dead-lettered message has a `warn:` line with `DEAD-LETTERED` and its reason instead; none of the three samples is
+dead-lettered (step 19 shows a rejection).
 
 **Queue status script (window 2).** Wait about 30 seconds after sending, then run:
 
@@ -433,19 +438,19 @@ $rows | Format-Table -AutoSize
 ```
 Queue                Messages Consumers
 -----                -------- ---------
-q.pnr-linking.dlq           1         0
+q.pnr-linking.dlq           0         0
 q.pnr-linking.raw           0         1
-q.protected.watch           2         0
+q.protected.watch           3         0
 ```
 
 | What | Meaning |
 |---|---|
 | `q.pnr-linking.raw`: 0 messages, 1 consumer | The worker consumed everything and is still connected |
-| `q.protected.watch`: 2 | `PNR_LINKING.txt` and `PNR_LINKING_02_Negative_Testing.txt` were protected and published |
-| `q.pnr-linking.dlq`: 1 | `PNR_LINKING_03_Negative_Testing.txt` was rejected by design (step 19 shows another rejection) |
+| `q.protected.watch`: 3 | All three samples were protected and published |
+| `q.pnr-linking.dlq`: 0 | Nothing was rejected (step 19 shows a rejection) |
 
-The same numbers are in PubSub+ Manager → **Queues** (click **Refresh Data**). Running the sender again adds 2 more
-published and 1 more rejected. This broker run has not been repeated for this worker; the end-to-end sample check in step 8 gives the same result.
+The same numbers are in PubSub+ Manager → **Queues** (click **Refresh Data**). Running the sender again adds 3 more
+published. This broker run has not been repeated for this worker; the end-to-end sample check in step 8 gives the same result.
 
 A DLQ holds the **original, unprotected** message, with the reason in the `presidio-reject-reason` header. Treat
 DLQ contents as personal data.
@@ -548,10 +553,12 @@ environment's section, then environment variables (`__` separates levels). Set a
 |---|---|
 | `$env:Messaging__Feed = "PNR-Linking"` | The worker consumes only the PNR-Linking feed |
 | `$env:Messaging__ConsumersPerTask = "4"` | 4 consumers per input queue (1–32) |
+| `$env:Presidio__DefaultDetection = "true"` | Presidio's predefined recognizers (email, phone, credit card, spaCy `PERSON` and the rest) run beside the recognizer file; `false`, the default, acts only on what the file defines |
 | `$env:Logging__LogLevel__Default = "Warning"` | Only warnings and errors, such as dead letters |
 
 The feed protection rules are in `src/PresidioDemo.Core/Configuration/recognizers/pnr-linking.xml`. The build copies
-it next to the worker.
+it next to the worker. It defines passenger names only (`PERSON`); with `Presidio:DefaultDetection` off, as shipped, nothing
+else is protected.
 
 ## Troubleshooting
 

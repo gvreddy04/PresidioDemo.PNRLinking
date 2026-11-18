@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1880 754" role="img" aria-labelledby="title desc">
 <title id="title">PNR-Linking feed with its dead letter queue</title>
-<desc id="desc">The DemoAir reservation host sends the PNR-Linking feed, UTF-8 JSON with an array root, through Solace micro-integrations to the integration Solace broker. The PNR-Linking input queue sits in the restricted PII box with its own PNR-Linking dead letter queue on the same broker. The PII service AWS account runs one ECS worker service for the PNR-Linking feed, with Presidio in-process masking PII in the JSON strings, and publishes masked messages to the PNR-Linking PII clean queue, which the partner core system consumes. At about 146 messages per second per task, 3 tasks cover an assumed 400 messages per second peak.</desc>
+<desc id="desc">The DemoAir reservation host sends the PNR-Linking feed, UTF-8 JSON with an array root, through Solace micro-integrations to the integration Solace broker. The PNR-Linking input queue sits in the restricted PII box with its own PNR-Linking dead letter queue on the same broker. The PII service AWS account runs one ECS worker service for the PNR-Linking feed, with Presidio in-process masking PII in the JSON strings, and publishes masked messages to the PNR-Linking PII clean queue, which the partner core system consumes. Detection handles about 628 messages per second per task; with the broker round trips, about 3 tasks cover an assumed 400 messages per second peak.</desc>
 <defs>
 <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9z" fill="#444441"/></marker>
 <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9z" fill="#A32D2D"/></marker>
@@ -60,7 +60,7 @@ text{font-family:'Segoe UI',Arial,sans-serif;fill:#2C2C2A}
 <text class="h" x="496" y="366">PII service AWS account · ECS Fargate</text>
 <g class="wk"><rect x="890" y="380" width="320" height="56" rx="6"/><text class="t" x="1050" y="402" text-anchor="middle">PNR-Linking worker</text><text class="m" x="1050" y="422" text-anchor="middle">.NET + Presidio · JSON array</text></g>
 <text class="s" x="509" y="470">One service for the PNR-Linking feed: reads the PII queue, masks the JSON strings, publishes to the clean queue, then acks.</text>
-<text class="s" x="509" y="494">Presidio runs inside the worker through Python.NET. No HTTP calls. About 146 msg/s per task: 3 tasks for an assumed 400 msg/s peak.</text>
+<text class="s" x="509" y="494">Presidio runs inside the worker through Python.NET. No HTTP calls. About 628 msg/s per task for detection; about 3 tasks for an assumed 400 msg/s peak.</text>
 
 <rect x="1530" y="80" width="320" height="230" rx="12" fill="#EEF6E8" stroke="#3B6D11" stroke-width="1.5"/>
 <text class="h" x="1546" y="106">Partner AWS</text>

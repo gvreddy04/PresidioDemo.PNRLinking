@@ -40,22 +40,24 @@ Each string is decided on its own, in this order:
 
 | Step | Recognizer file element | Example keys | Result |
 | --- | --- | --- | --- |
-| 1 | `<entity_mapping>` | `FirstName`, `LastName`, `MiddleName`, `BookedAs`, `DOB`, `PaxId`, `PaxLinkId`, `PaxFlightLegLinkId`, `OrderId`, `UserId`, the loyalty account numbers, `transitionLinkSegments` | The whole string is the mapped entity and gets that entity's anonymizer. All of these mask with `*` at the same width. |
+| 1 | `<entity_mapping>` | `FirstName`, `LastName`, `MiddleName`, `BookedAs` (names only) | The whole string is `PERSON` and is masked with `*` at the same width. No other key is mapped: `DOB`, `PaxId`, the link, order and user IDs, the loyalty account numbers and `transitionLinkSegments` are out of the names-only scope. |
 | 2 | `<keys_to_skip>` | `PNROwner`, `UaRecordLocator`, link type and version, flight-leg IDs, airports, timestamps, status | The string is published unchanged without analysis. The record locators link the bookings, so they stay unchanged. |
 | 3 | `<allow_list>` | none: the item is a timestamp shape | A string that matches an item end to end is published unchanged. |
 | 4 | Presidio | the reason keys `ChangeReason`, `LinkReasonAtCreation` and `ReasonForLeaving`, and any key the file does not name | Local Presidio analyzes the string. The property names of its key path are passed as Presidio context words, as Presidio's own `analyze_dict` passes a key. Each span at or above the threshold gets its entity's anonymizer; a string with nothing detected is published unchanged and listed for review. |
 
 A key is matched ignoring case, anywhere on the key path. The innermost mapped name wins. A number or boolean under a mapped key cannot be protected in its JSON type, so the message is dead-lettered (WR-016).
 
+Which recognizers run in step 4 depends on `Presidio:DefaultDetection`. Off (the shipped default), only the file's custom recognizer `passengerName` runs, so only the names act; the predefined recognizers and spaCy NER do not run. On, Presidio's predefined recognizers (email, phone, credit card, spaCy `PERSON`, `LOCATION`, `DATE_TIME` and the rest) run as well, and the skipped keys and the allow list keep the operational values away from them.
+
 ## Reviewed samples and results
 
 | Sample | Payload bytes | Result | Changed strings | Reason |
 | --- | ---: | --- | ---: | --- |
-| PNR_LINKING.txt | 2,217 | Published | 14 | |
-| PNR_LINKING_02_Negative_Testing.txt | 2,236 | Published | 15 | The extra `MiddleName` is masked by its key |
-| PNR_LINKING_03_Negative_Testing.txt | 2,213 | Dead-lettered | | A personal-data property holds a number |
+| PNR_LINKING.txt | 2,217 | Published | 6 | |
+| PNR_LINKING_02_Negative_Testing.txt | 2,236 | Published | 7 | The extra `MiddleName` is masked by its key |
+| PNR_LINKING_03_Negative_Testing.txt | 2,213 | Published | 6 | The numeric `DOB` is not under a mapped key, so it is published unchanged |
 
-These are the outcomes the monorepo reported for these samples at `dffbdad`. The parity baseline lists 14 protected values of PNR_LINKING.txt and its 3 record locators. All 14 values are protected, so there are no approved parity exceptions. The record locators, the numbers, booleans and nulls, the MQ headers, the row framing and the newline style are unchanged. The two reason strings are listed for review because nothing is detected in them.
+These results use the shipped `Presidio:DefaultDetection` (off). The monorepo reported, at `dffbdad`, 14 and 15 changed strings and `_03` dead-lettered; that was before the file kept passenger names only. The parity baseline lists 14 protected values of PNR_LINKING.txt and its 3 record locators. The safety check is names-only: its 6 `PERSON` values are all protected, so there are no approved parity exceptions, and its other 8 values (dates of birth and passenger, link and order IDs) are reported as out of scope. The record locators, the numbers, booleans and nulls, the MQ headers, the row framing and the newline style are unchanged. In PNR_LINKING.txt, 8 strings are listed for review because nothing is detected in them, the IDs the file no longer maps among them.
 
 ## Reproduce verification
 
@@ -68,4 +70,4 @@ src/.venv/Scripts/python.exe -m unittest discover -s tests/unit-tests -p "test_*
 src/.venv/Scripts/python.exe tests/run_sample_verification.py
 ```
 
-The sample verification runs the three samples through `tests/FeedPipelineHarness`. It keeps the outputs, transaction logs and a value-free `verification.json` in a fresh `.test-runs/e2e-*` folder. The harness exits with code 2 because PNR_LINKING_03 is dead-lettered by design.
+The sample verification runs the three samples through `tests/FeedPipelineHarness`. It keeps the outputs, transaction logs and a value-free `verification.json` in a fresh `.test-runs/e2e-*` folder. The harness exits with code 0 because all three samples are published.
